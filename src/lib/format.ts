@@ -1,4 +1,5 @@
-// Byte and date formatting. Units are 1024-based with Explorer's labels (KB, MB, GB).
+// Byte and date formatting. Units are 1024-based with Explorer's labels (KB, MB, GB) —
+// decided 2026-10-23; DISM's 10⁹ "GB" differs, so tooltips carry the exact byte count.
 
 const UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
@@ -18,6 +19,11 @@ export function formatBytes(bytes: number): string {
     unit++;
   }
   return `${value.toFixed(1)} ${UNITS[unit]}`;
+}
+
+/** Exact byte count for tooltips, e.g. "20,265,753,644 바이트". Locale-independent grouping. */
+export function formatExactBytes(bytes: number): string {
+  return `${String(Math.round(bytes)).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} 바이트`;
 }
 
 export function formatDate(unixSeconds: number | null): string {

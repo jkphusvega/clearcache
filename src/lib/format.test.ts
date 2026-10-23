@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes } from "./format";
+import { formatBytes, formatExactBytes } from "./format";
 
 const GiB = 1024 ** 3;
 
@@ -23,5 +23,14 @@ describe("formatBytes", () => {
 
   it("caps at TB", () => {
     expect(formatBytes(2048 * 1024 * GiB)).toBe("2048.0 TB");
+  });
+});
+
+describe("formatExactBytes", () => {
+  it("groups digits by thousands regardless of locale", () => {
+    expect(formatExactBytes(0)).toBe("0 바이트");
+    expect(formatExactBytes(999)).toBe("999 바이트");
+    expect(formatExactBytes(1024)).toBe("1,024 바이트");
+    expect(formatExactBytes(20265753644)).toBe("20,265,753,644 바이트");
   });
 });

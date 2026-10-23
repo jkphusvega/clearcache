@@ -596,6 +596,44 @@ mod tests {
         assert_eq!(n, 0);
     }
 
+    /// Why ClearCache's WinSxS split runs ~1% above DISM: run the same accounting twice,
+    /// once with on-disk size (allocation) and once with EndOfFile (no cluster rounding).
+    /// Read-only. Run manually: `cargo test winsxs_rounding -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn winsxs_rounding_explains_gap_to_dism() {
+        struct EofOnly;
+        impl FileOpener for EofOnly {
+            fn open_info(&self, path: &Path) -> Result<FileInfo, String> {
+                let i = Win32Opener.open_info(path)?;
+                Ok(FileInfo {
+                    disk_bytes: i.end_of_file,
+                    ..i
+                })
+            }
+        }
+        let root = paths::env_path("SystemRoot").unwrap().join("WinSxS");
+        let s = scope(&root, &[(1, &root)]);
+        let gb = |b: u64| b as f64 / 1e9; // DISM's GB
+        for (name, opener) in [("disk", &Win32Opener as &dyn FileOpener), ("eof", &EofOnly)] {
+            let r = run_collect(
+                std::slice::from_ref(&s),
+                opener,
+                &SyncRootDetection::default(),
+            );
+            let u = &r[&1];
+            println!(
+                "{name}: exclusive={} ({:.2} GB) shared={} ({:.2} GB) total={:.2} GB unverified={}",
+                u.exclusive_bytes,
+                gb(u.exclusive_bytes),
+                u.shared_bytes,
+                gb(u.shared_bytes),
+                gb(u.exclusive_bytes + u.shared_bytes),
+                u.unverified_files
+            );
+        }
+    }
+
     /// D11: compare handle-based sizes with `GetCompressedFileSizeW` on 100 WinSxS files.
     /// Read-only. Run manually: `cargo test winsxs_size_source -- --ignored --nocapture`.
     #[test]

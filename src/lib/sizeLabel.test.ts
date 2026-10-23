@@ -79,4 +79,19 @@ describe("sizeLabel", () => {
     const l = sizeLabel({ ...base, logical_bytes: null, tag: "system" });
     expect(l).toEqual({ kind: "unmeasured", text: "—", tooltip: UNMEASURED_TOOLTIP });
   });
+
+  it("hover shows exact bytes for every measured kind", () => {
+    const exact = "크기: 5,368,709,120 바이트";
+    for (const accounting of ["none", "pending", "cancelled", "unverified"] as const) {
+      expect(sizeLabel({ ...base, accounting }).tooltip).toBe(exact);
+    }
+    expect(sizeLabel({ ...base, tag: "system" }).tooltip).toBe(exact);
+  });
+
+  it("hover lists exclusive and shared bytes once accounting is done", () => {
+    const l = sizeLabel({ ...base, accounting: "done", exclusive_bytes: 3 * GiB, shared_bytes: 1000 });
+    expect(l.tooltip).toBe("크기: 5,368,709,120 바이트\n실제 확보: 3,221,225,472 바이트\n공유: 1,000 바이트");
+    const sys = sizeLabel({ ...base, tag: "system", accounting: "done", exclusive_bytes: 10, shared_bytes: 20 });
+    expect(sys.tooltip).toBe("크기: 5,368,709,120 바이트\nWindows와 공유되지 않음: 10 바이트\nWindows와 공유됨: 20 바이트");
+  });
 });

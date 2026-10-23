@@ -3,7 +3,7 @@
 // an occupancy, or a pending/cancelled state (D13, D16, SPEC "4. 메인 화면").
 
 import type { FlatNode } from "../types";
-import { formatBytes } from "./format";
+import { formatBytes, formatExactBytes } from "./format";
 
 export type SizeKind =
   | "reclaimable" // exclusive_bytes known
@@ -45,17 +45,30 @@ export function sizeLabel(n: SizeInput): SizeLabel {
   }
   const logical = formatBytes(n.logical_bytes);
   const unverified = n.unverified_files > 0 ? `일부 미검증 ${n.unverified_files}개` : undefined;
+  // Hover shows exact bytes: the label is rounded (1024-based "GB"), the tooltip is not.
+  const exact = (lines: [string, number | null][]) =>
+    lines
+      .filter((l): l is [string, number] => l[1] != null)
+      .map(([k, v]) => `${k}: ${formatExactBytes(v)}`)
+      .join("\n");
+  const tooltip = exact([["크기", n.logical_bytes]]);
 
   if (n.accounting === "pending") {
-    return { kind: "calculating", text: logical, detail: "확보량 계산 중", partial };
+    return { kind: "calculating", text: logical, detail: "확보량 계산 중", partial, tooltip };
   }
   if (n.accounting === "cancelled") {
-    return { kind: "cancelled", text: logical, detail: "확보량 계산 취소됨", partial };
+    return { kind: "cancelled", text: logical, detail: "확보량 계산 취소됨", partial, tooltip };
   }
 
   const isSystem = n.tag != null;
   if (n.accounting === "done" && n.exclusive_bytes != null) {
     const shared = formatBytes(n.shared_bytes ?? 0);
+    const exclusiveName = isSystem ? "Windows와 공유되지 않음" : "실제 확보";
+    const doneTooltip = exact([
+      ["크기", n.logical_bytes],
+      [exclusiveName, n.exclusive_bytes],
+      [isSystem ? "Windows와 공유됨" : "공유", n.shared_bytes ?? 0],
+    ]);
     if (isSystem) {
       // WinSxS: neutral wording — "not shared with Windows" is not the same as "removable".
       return {
@@ -65,6 +78,7 @@ export function sizeLabel(n: SizeInput): SizeLabel {
           .filter(Boolean)
           .join(" · "),
         partial,
+        tooltip: doneTooltip,
       };
     }
     return {
@@ -72,15 +86,17 @@ export function sizeLabel(n: SizeInput): SizeLabel {
       text: `실제 확보 ${formatBytes(n.exclusive_bytes)}`,
       detail: [`공유 ${shared}`, unverified].filter(Boolean).join(" · "),
       partial,
+      tooltip: doneTooltip,
     };
   }
   if (isSystem) {
-    return { kind: "occupies", text: `차지하는 크기 ${logical}`, partial };
+    return { kind: "occupies", text: `차지하는 크기 ${logical}`, partial, tooltip };
   }
   return {
     kind: "max_unverified",
     text: logical,
     detail: n.accounting === "unverified" ? "최대치(미검증) · 동기화 폴더 확인 불가" : "최대치(미검증)",
     partial,
+    tooltip,
   };
 }
