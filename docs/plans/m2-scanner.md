@@ -1,7 +1,13 @@
 # M2 계획: 확보량 계산 core + 스캐너 + 드라이브 선택 + 진행률 + 결과 표
 
-> **현재 상태 (2026-09-26): eng 리뷰 완료. 다음은 구현 승인.** 구현은 아직 시작하지 않았다.
-> - 다음 세션: 이 계획으로 M2 구현 승인을 받은 뒤 아래 "Implementation Tasks" T1~T9를 진행한다(레인 A Rust core, 레인 B `src/lib` + Vitest).
+> **현재 상태 (2026-09-27): T1~T9 구현 완료.** `cargo test`(47 + ignored 1), `cargo clippy`, `npm test`(21), `npm run build` 통과.
+> - 실측(CLI, release): 사용자 폴더 파일 약 80만 개, 순회 첫 스캔 1.7초 / 두 번째 1.5초. C: 전체 파일 약 104만 개, 순회 4.4초 + 확보량 6.2초.
+> - D11 비교(WinSxS 100개): 전부 일치, 목록 크기와 핸들 크기 차이 0건. 단 표본에 압축 파일이 없어 압축 경로는 미검증.
+> - D12 구현 메모: 8 MiB 스택만으로는 디버그 빌드에서 깊이 600이 넘쳤다(rayon 중첩 프레임). 깊이 24 아래만 병렬로 돌고 그 아래는 순차 재귀로 바꿔 8 MiB로 통과한다.
+> - 검증 4단계(2026-10-23): 이 PC에는 uv 캐시·pnpm 저장소·HuggingFace 캐시가 없어 두 곳만 비교했다. `logical_bytes`가 독립 합산(PowerShell `Get-ChildItem` 길이 합, 탐색기 "크기"와 같은 방식)과 바이트 단위로 일치한다.
+>   - `C:\Windows\WinSxS`: 파일 139,616개, 20,265,753,644 B(일치). exclusive 10,112,541,393 B / shared 9,087,141,000 B / 미검증 1개.
+>   - `~\.ollama\models`: 파일 6개, 4,661,228,100 B(일치). 허용 목록 밖이라 logical만.
+>   - 남은 것: DISM `AnalyzeComponentStore` 값(관리자 필요, 사용자 실행)과 WinSxS exclusive 비교, 탐색기 "디스크 할당 크기" 비교, 화면 확인(사용자).
 > - 남은 할 일:
 >   - 디자인 리뷰(/plan-design-review)는 M3 계획 때 한다(네 종류 카드 화면).
 >   - 라이선스(현재 MIT 임시)는 M3 규칙 작성 전에 확정한다.
@@ -509,39 +515,39 @@ Approval readiness: PASS — R1(D10), R2(D11), R3(D12), R4(D13, 추가 규칙 �
 ## Implementation Tasks
 Synthesized from this review's findings. Each task derives from a specific finding above. Run with Claude Code or Codex; checkbox as you ship.
 
-- [ ] **T1 (P1, human: ~3h / CC: ~15min)** — core/targets — 스캔 대상 목록과 id 해석, 순수 판정 함수 테스트
+- [x] **T1 (P1, human: ~3h / CC: ~15min)** — core/targets — 스캔 대상 목록과 id 해석, 순수 판정 함수 테스트
   - Surfaced by: 계획 "스캔 대상" (D7 승인 범위)
   - Files: `src-tauri/src/core/targets.rs`
   - Verify: `cargo test targets`
-- [ ] **T2 (P1, human: ~1d / CC: ~40min)** — core/scan — walk·attrs·policy: 속성 판별, 시스템 매핑, 깊이 제한, partial 전파, 두 단계 반환
+- [x] **T2 (P1, human: ~1d / CC: ~40min)** — core/scan — walk·attrs·policy: 속성 판별, 시스템 매핑, 깊이 제한, partial 전파, 두 단계 반환
   - Surfaced by: F3(D12), Q2(D16), A1(D13)
   - Files: `src-tauri/src/core/scan/{walk,attrs,policy,progress,mod}.rs`
   - Verify: `cargo test scan` (깊이 600, 정션, partial, 취소, 두 단계)
-- [ ] **T3 (P1, human: ~3h / CC: ~15min)** — core/syncroots — 동기화 루트 감지와 실패 처리(주입)
+- [x] **T3 (P1, human: ~3h / CC: ~15min)** — core/syncroots — 동기화 루트 감지와 실패 처리(주입)
   - Surfaced by: A2(D14)
   - Files: `src-tauri/src/core/scan/syncroots.rs`
   - Verify: `cargo test syncroots`
-- [ ] **T4 (P1, human: ~1d / CC: ~40min)** — core/accounting — 같은 핸들에서 크기를 읽는 exclusive/shared, 클라우드·동기화 미개봉, 열기 실패 폴백
+- [x] **T4 (P1, human: ~1d / CC: ~40min)** — core/accounting — 같은 핸들에서 크기를 읽는 exclusive/shared, 클라우드·동기화 미개봉, 열기 실패 폴백
   - Surfaced by: F2(D11), 설계 R2-5
   - Files: `src-tauri/src/core/accounting.rs`
   - Verify: `cargo test accounting`, `cargo test -- --ignored` (WinSxS 샘플 비교)
-- [ ] **T5 (P1, human: ~4h / CC: ~20min)** — commands — start_scan/cancel/get_scan_result, Channel 두 단계 갱신, 동시 스캔 거부
+- [x] **T5 (P1, human: ~4h / CC: ~20min)** — commands — start_scan/cancel/get_scan_result, Channel 두 단계 갱신, 동시 스캔 거부
   - Surfaced by: A1(D13), Section 3 추가 테스트
   - Files: `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`
   - Verify: `cargo test commands`
-- [ ] **T6 (P2, human: ~30min / CC: ~5min)** — CLI — `examples/scan.rs`
+- [x] **T6 (P2, human: ~30min / CC: ~5min)** — CLI — `examples/scan.rs`
   - Surfaced by: F1(D10)
   - Files: `src-tauri/examples/scan.rs`
   - Verify: `cargo run --example scan -- --target user_home --json`
-- [ ] **T7 (P2, human: ~3h / CC: ~10min)** — 화면 로직 — `src/lib/{format,sizeLabel,sortTree}.ts` + Vitest
+- [x] **T7 (P2, human: ~3h / CC: ~10min)** — 화면 로직 — `src/lib/{format,sizeLabel,sortTree}.ts` + Vitest
   - Surfaced by: T1(D17), Q1(D15)
   - Files: `src/lib/*`, `package.json`
   - Verify: `npm test`
-- [ ] **T8 (P2, human: ~1d / CC: ~30min)** — 화면 — TargetPicker, ProgressBar, FolderTree, Summary(경고, 근사치, 보기 전용)
+- [x] **T8 (P2, human: ~1d / CC: ~30min)** — 화면 — TargetPicker, ProgressBar, FolderTree, Summary(경고, 근사치, 보기 전용)
   - Surfaced by: A1(D13), A2(D14), Q1(D15), Q2(D16)
   - Files: `src/components/*`, `src/App.tsx`, `src/types.ts`
   - Verify: `npm run tauri dev` 수동 체크리스트(Test Plan artifact)
-- [ ] **T9 (P3, human: ~30min / CC: ~5min)** — 문서 — `LICENSE`(MIT 임시), SPEC 본문에 설계 문서의 네 종류 분류·확보량 모델 반영(v1.3 약속)
+- [x] **T9 (P3, human: ~30min / CC: ~5min)** — 문서 — `LICENSE`(MIT 임시), SPEC 본문에 설계 문서의 네 종류 분류·확보량 모델 반영(v1.3 약속)
   - Surfaced by: 설계 문서 승인(D8), SPEC v1.3 개정 이력
   - Files: `LICENSE`, `SPEC.md`
   - Verify: 문서 검토
