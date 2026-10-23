@@ -1,4 +1,4 @@
-# AI 디스크 정리 도구 — 바이브코딩 스펙 (v1.5)
+# AI 디스크 정리 도구 — 바이브코딩 스펙 (v1.6)
 
 Sep 25, 2026 · @종경 · 개정 이력은 문서 끝에 있다.
 
@@ -142,6 +142,11 @@ flowchart LR
 
 - 내장 규칙은 앱에 들어 있는 `rules.json`(버전 번호 포함)이다. **실행할 때마다** 버전을 비교해 SQLite의 내장 규칙을 갱신한다. 사용자가 추가한 규칙은 별도 출처(`source=user`)로 두고 건드리지 않는다.
 - 규칙 = 경로 패턴 + 이름 + 등급 + 설명 + 재생성 방법 + 대상 방식(`folder` 또는 `contents_older_than`).
+- **앱 설치 위치 제외 목록**: `%LOCALAPPDATA%\Packages`, `%LOCALAPPDATA%\Programs`, `%APPDATA%\npm`, `%ProgramFiles%`, `%ProgramFiles(x86)%`.
+  - 어느 깊이든 맞는 이름 패턴(`**\node_modules`, `**\.next`, `**\target` 등)을 쓰는 **모든 규칙**(내장·사용자 규칙 모두)은 이 위치 아래에서 걸리지 않는다. 규칙이 끌 수 없다.
+  - 이 아래의 같은 이름 폴더는 개발 산출물이 아니라 설치된 앱의 일부일 수 있기 때문이다(Electron 앱의 `resources\app\node_modules`, 전역 npm 패키지 등).
+  - 경로를 직접 지정한 규칙(`%LOCALAPPDATA%\npm-cache` 등)에는 적용하지 않는다.
+- `%LOCALAPPDATA%\Programs` 아래의 앱 폴더는 사용자별로 설치된 앱이다. 처리 방식은 `uninstall_app`이고 선택할 수 없다.
 - 초기 규칙 예시:
 
 | 경로 패턴 | 이름 | 등급 | 대상 |
@@ -243,16 +248,18 @@ API 키는 SQLite에 저장하지 않는다.
   - `.ssh`, `.aws`, `.gnupg`, `.azure`, `.kube`
   - 브라우저 프로필: `Google\Chrome\User Data`, `Microsoft\Edge\User Data`, `Mozilla\Firefox\Profiles`
   - `%LOCALAPPDATA%\Packages` (스토어 앱 데이터)
+  - Windows 자격 증명·키 저장소: `%APPDATA%\Microsoft\Protect`(DPAPI 마스터 키), `%APPDATA%\Microsoft\Credentials`, `%LOCALAPPDATA%\Microsoft\Credentials`, `%APPDATA%\Microsoft\Crypto`
   - **git 저장소**: `.git`이 들어 있는 폴더(저장소 루트)와 그 상위 폴더 전부. 저장소 안의 하위 폴더는 규칙에 걸리면 규칙을 따른다 (그래서 저장소 안의 `node_modules`는 "안전"이 될 수 있다).
+    - **규칙에 걸린 폴더 안에서 발견된 `.git`은 저장소 루트로 보지 않고 상위로 전파하지 않는다.** 예: git 의존성으로 받은 `node_modules\<패키지>\.git`, 캐시 안의 저장소 사본. 전파하면 그 `node_modules`와 프로젝트 전체가 "사용자 데이터"로 고정된다.
   - 다음 확장자 파일이 1GB 이상 들어 있는 폴더: `.vhdx`, `.vhd`, `.vmdk`, `.pst`, `.ost`, `.kdbx`.
   - **선택 가능 여부**는 둘로 나뉜다.
-    - 자격 증명(`.ssh`, `.aws`, `.gnupg`, `.azure`, `.kube`), 브라우저 프로필, `%LOCALAPPDATA%\Packages`: 처리 방식은 `explain_only`이고 **선택할 수 없다.** 그 하위 폴더도 규칙에 걸리든 아니든 선택할 수 없다(`Packages` 안의 `LocalCache`·`TempState` 포함).
+    - **자격 증명 보호 경로**: 자격 증명(`.ssh`, `.aws`, `.gnupg`, `.azure`, `.kube`), 브라우저 프로필, `%LOCALAPPDATA%\Packages`, Windows 자격 증명·키 저장소. 처리 방식은 `explain_only`이고 **선택할 수 없다.** 그 하위 폴더도 규칙에 걸리든 아니든 선택할 수 없다(`Packages` 안의 `LocalCache`·`TempState` 포함). 이 경로를 품은 상위 폴더(`%LOCALAPPDATA%\Google`, `AppData\Local` 등)도 S2에 따라 선택할 수 없다.
     - 그 밖의 고정 항목(Documents 등, git 저장소 루트, 큰 `.pst`·`.kdbx` 폴더): 경고 모달을 거쳐 선택할 수 있다. OneDrive는 동기화 루트라서 S7에 따라 따로 막힌다.
 - 격리 시 rename이 실패하면 "사용 중"으로 표시하고 옮기지 않는다.
 - 앱 안에서 영구 삭제는 격리함 화면의 "완전 삭제" 버튼 하나뿐이다. 확인 모달에 경로와 크기를 보여준다.
 - **파일 손실 방지 규칙** (설계 문서 `docs/designs/clearcache-reclaim-core.md`와 그 리뷰에서 추가, 각 항목은 M4 완료 조건의 테스트 S1~S12와 연결):
   - **S1 [R2-2]** 완전 삭제는 격리된 폴더 안의 리파스 포인트(정션, 심볼릭 링크, 마운트 지점)를 **링크 자체만 지우고 대상은 절대 따라가지 않는다.**
-  - **S2 [R2-6]** 하위에 보호 대상(시스템 보호 경로, 동기화 루트, WSL·Docker 디스크, 격리함 루트)이 하나라도 있는 폴더는 선택·격리할 수 없다.
+  - **S2 [R2-6]** 하위에 보호 대상(시스템 보호 경로, 동기화 루트, WSL·Docker 디스크, 격리함 루트, 자격 증명 보호 경로)이 하나라도 있는 폴더는 선택·격리할 수 없다. 1GB 기준 아래에 숨은 보호 대상도 크기와 관계없이 위로 전파해 판정한다.
   - **S3 [R2-7]** 격리 직전에 항목마다 전체 안전 검사를 다시 한다: 리파스 포인트, 동기화 루트, 보호 경로, 클라우드 속성, 규칙·action 일치. 스캔 이후 무언가 바뀌었으면 이유를 보여주고 거부한다.
   - **S4 [R2-12]** 격리함은 사용자별로 분리한다(`C:\ClearCache_Quarantine\<사용자 SID>\...`). 만들 때 해당 사용자와 SYSTEM만 접근하도록 ACL을 건다. 각 사용자의 앱은 자기 항목만 보고 지운다.
   - **S5 [R2-13]** 완전 삭제가 중간에 실패하면 기록을 지우지 않는다. 상태는 "일부 삭제됨"으로 바꾸고 남은 크기를 기록하며, 재시도를 제공한다. 영수증에는 실측 확보량과 실패 개수만 적는다.
@@ -331,6 +338,12 @@ M4까지만 해도 AI 없이 쓸 수 있는 정리 도구가 된다. AI는 M5에
   - 격리함 화면에 드라이브별 용량을 보여줘야 한다.
 
 ## 개정 이력
+
+**v1.6 (2026-10-24)**: M3 계획 사용자 검토 1~3번을 안전 규칙과 규칙 DB에 반영했다.
+
+- 자격 증명 보호 경로에 Windows 자격 증명·키 저장소(`%APPDATA%\Microsoft\Protect`·`Credentials`·`Crypto`, `%LOCALAPPDATA%\Microsoft\Credentials`)를 추가했다. S2 보호 대상에 자격 증명 보호 경로 전체를 넣어, 이를 품은 상위 폴더(`%LOCALAPPDATA%\Google`, `AppData\Local` 등)도 선택할 수 없게 했다.
+- 앱 설치 위치 제외 목록을 정의했다. 모든 `**\` 패턴 규칙(`node_modules`, `.next`, `target` 포함)이 이 위치 아래에서 걸리지 않는다. `%LOCALAPPDATA%\Programs` 아래 앱 폴더는 `uninstall_app`(선택 불가)이다.
+- 규칙에 걸린 폴더 안의 `.git`은 저장소 루트로 보지 않고 상위로 전파하지 않는다.
 
 **v1.5 (2026-10-24)**: M3 계획(`docs/plans/m3-rules.md`) 초안에서 사용자가 결정한 Q1~Q5를 반영했다.
 

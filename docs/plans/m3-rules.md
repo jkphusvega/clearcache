@@ -1,10 +1,10 @@
 # M3 계획 (초안): 규칙 DB + 등급 판정 + 시스템 폴더 보호
 
 > **현재 상태 (2026-10-24): 초안, 범위 질문 Q1~Q5 결정 완료.** 승인 전에 `/plan-design-review`와 `/plan-eng-review`를 거친다. 구현은 시작하지 않았다.
-> - Q1~Q5는 사용자가 결정했다(아래 "결정됨"). 사용자 검토(2026-10-24)의 1~3번은 반영했다(자격 증명 보호 경로의 S2 전파, `node_modules` 제외 범위, 규칙 안 `.git` 비전파). 4~10번은 미결 U3~U9로 eng 리뷰에서 다룬다.
+> - Q1~Q5는 사용자가 결정했다(아래 "결정됨"). 사용자 검토(2026-10-24)의 1~3번은 반영했다(자격 증명 보호 경로의 S2 전파, 모든 `**\` 규칙에 공통 적용하는 앱 설치 위치 제외 목록, 규칙 안 `.git` 비전파). SPEC v1.6에도 반영했다. 4~10번은 미결 U3~U9로 eng 리뷰에서 다룬다.
 > - 첫 작업은 라이선스 정리(T0)다. MIT로 확정됐고, 규칙을 한 줄이라도 쓰기 전에 관련 파일의 표기를 끝낸다.
 
-기준 문서: [SPEC.md](../../SPEC.md) v1.5, 설계 문서 [clearcache-reclaim-core.md](../designs/clearcache-reclaim-core.md)(접근 B), [m2-scanner.md](m2-scanner.md)(M2 완료, "남은 할 일"과 "다음 단계로 미루는 것")
+기준 문서: [SPEC.md](../../SPEC.md) v1.6, 설계 문서 [clearcache-reclaim-core.md](../designs/clearcache-reclaim-core.md)(접근 B), [m2-scanner.md](m2-scanner.md)(M2 완료, "남은 할 일"과 "다음 단계로 미루는 것")
 
 ## 완료 기준
 
@@ -137,8 +137,13 @@ src/components/{GradeBadge,RuleGroupRow,SelectionBar,WarningModal,CategoryCards}
   - 매칭은 대소문자를 무시하고, `paths::norm`으로 정규화한 뒤 경로 구성요소 경계에서 비교한다.
 - **조건(`when`)**: 같은 이름이 다른 뜻일 때를 가른다.
   - `sibling_exists: ["package.json"]`: 예를 들어 `**\target`은 옆에 `Cargo.toml`이 있을 때만 Rust 빌드 산출물이다.
-  - `not_inside: ["%LOCALAPPDATA%\\Packages"]`: 이 경로 아래에서는 규칙이 걸리지 않는다.
-    - 예: `**\node_modules`의 `not_inside`는 `%LOCALAPPDATA%\Packages`, `%LOCALAPPDATA%\Programs`, `%APPDATA%\npm`, `%ProgramFiles%`, `%ProgramFiles(x86)%`다. Electron 앱의 `resources\app\node_modules`와 전역 npm 패키지(`%APPDATA%\npm\node_modules`)는 지우면 앱이나 명령이 깨지므로 "안전"으로 잡히면 안 된다.
+  - `not_inside: [...]`: 이 경로 아래에서는 규칙이 걸리지 않는다. 규칙마다 따로 더할 수 있다.
+- **앱 설치 위치 제외 목록**(`APP_INSTALL_EXCLUDES`, 공통 정의):
+  - 대상: `%LOCALAPPDATA%\Packages`, `%LOCALAPPDATA%\Programs`, `%APPDATA%\npm`, `%ProgramFiles%`, `%ProgramFiles(x86)%`
+  - **어느 깊이든 맞는 이름 패턴(`**\...`)을 쓰는 모든 규칙**(`node_modules`, `.next`, `target` 등)에 자동으로 적용된다. 규칙 JSON에 쓰지 않아도 되고, 규칙이 끌 수도 없다. 사용자 규칙(`source=user`)에도 똑같이 적용된다.
+  - 이유: 이 아래의 `node_modules`·`.next`·`target`은 개발 산출물이 아니라 설치된 앱의 일부일 수 있다. 예를 들어 Electron 앱의 `resources\app\node_modules`, 전역 npm 패키지, 앱이 함께 배포한 Rust 산출물이 그렇다. 지우면 앱이나 명령이 깨진다.
+  - 환경 변수 접두로 경로를 직접 지정한 규칙(`%LOCALAPPDATA%\npm-cache` 등)에는 적용하지 않는다. 그 규칙들은 위치를 명시했기 때문이다.
+  - 한 곳(`rules/pattern.rs`의 상수)에서 정의하고, M4 격리 직전 검사(S3)도 같은 상수를 쓴다.
   - 조건은 스캔이 이미 읽은 디렉터리 목록만으로 판정한다. 파일을 열지 않는다.
 - **동기화**:
   - 실행할 때마다 내장 `rules.json`의 버전과 DB의 `builtin_version`을 비교한다. 내장 버전이 다르면 `source=builtin` 행을 통째로 바꾼다. `source=user` 행은 건드리지 않는다.
@@ -152,9 +157,9 @@ src/components/{GradeBadge,RuleGroupRow,SelectionBar,WarningModal,CategoryCards}
 | 개발·AI | `%LOCALAPPDATA%\uv\cache` | 안전 | quarantine | 폴더 |
 | 개발·AI | `%LOCALAPPDATA%\pnpm\store` | 아마 안전 (프로젝트 재설치 필요) | quarantine | 폴더 |
 | 개발·AI | `%USERPROFILE%\.gradle\caches` | 안전 | quarantine | 폴더 |
-| 개발·AI | `**\node_modules` (옆에 `package.json`; `%LOCALAPPDATA%\Packages`·`%LOCALAPPDATA%\Programs`·`%APPDATA%\npm`·Program Files 안은 제외) | 안전 (`npm install`로 복구) | quarantine | 폴더 |
-| 개발·AI | `**\.next` (옆에 `package.json`) | 안전 | quarantine | 폴더 |
-| 개발·AI | `**\target` (옆에 `Cargo.toml`) | 안전 (`cargo build`로 복구) | quarantine | 폴더 |
+| 개발·AI | `**\node_modules` (옆에 `package.json`) † | 안전 (`npm install`로 복구) | quarantine | 폴더 |
+| 개발·AI | `**\.next` (옆에 `package.json`) † | 안전 | quarantine | 폴더 |
+| 개발·AI | `**\target` (옆에 `Cargo.toml`) † | 안전 (`cargo build`로 복구) | quarantine | 폴더 |
 | 개발·AI | `%USERPROFILE%\.cache\huggingface` | 아마 안전 (다시 받기) | quarantine | 폴더 |
 | 개발·AI | `%USERPROFILE%\.ollama\models` | 아마 안전 (`ollama pull`로 다시 받기) | quarantine | 폴더 |
 | Windows | `%LOCALAPPDATA%\Temp` | 안전 | quarantine | 7일 넘은 항목만 |
@@ -162,6 +167,7 @@ src/components/{GradeBadge,RuleGroupRow,SelectionBar,WarningModal,CategoryCards}
 | Windows | `%LOCALAPPDATA%\Google\Play Games` | 아마 안전 (앱 제거 권장) | quarantine | 폴더 |
 | Windows | `%USERPROFILE%\Downloads` | 사용자 데이터 | quarantine (경고) | 폴더 |
 
+- †: `**\` 패턴 규칙이라 앱 설치 위치 제외 목록이 자동으로 적용된다.
 - `contents_older_than` 규칙은 폴더 전체가 아니라 기준일보다 오래된 하위 항목의 크기만 확보 대상으로 표시한다. 크기는 목록 정보의 수정일로 계산한다. Temp 폴더 자체는 선택할 수 없고, "7일 넘은 항목 N GB"가 선택 단위가 된다.
 
 ### 시스템 폴더 보호 (`protect.rs`)
@@ -175,7 +181,7 @@ src/components/{GradeBadge,RuleGroupRow,SelectionBar,WarningModal,CategoryCards}
   - Q2의 자격 증명 폴더: `.ssh`, `.aws`, `.gnupg`, `.azure`, `.kube`
   - 브라우저 프로필: `Google\Chrome\User Data`, `Microsoft\Edge\User Data`, `Mozilla\Firefox\Profiles`
   - `%LOCALAPPDATA%\Packages`
-  - Windows 자격 증명·키 저장소: `%APPDATA%\Microsoft\Protect`(DPAPI 마스터 키), `%APPDATA%\Microsoft\Credentials`, `%APPDATA%\Microsoft\Crypto`
+  - Windows 자격 증명·키 저장소: `%APPDATA%\Microsoft\Protect`(DPAPI 마스터 키), `%APPDATA%\Microsoft\Credentials`, `%LOCALAPPDATA%\Microsoft\Credentials`, `%APPDATA%\Microsoft\Crypto`
   - 이 폴더를 품은 상위 폴더(`%LOCALAPPDATA%\Google`, `AppData\Local`, `AppData\Roaming` 등)는 S2에 따라 선택 불가가 된다.
 - **통째로 격리 불가**: 드라이브 루트(`C:\`), `C:\Users`, `C:\Users\<사용자>`
 - **경로 정규화**:
@@ -212,7 +218,7 @@ src/components/{GradeBadge,RuleGroupRow,SelectionBar,WarningModal,CategoryCards}
 - 기본 체크: 규칙 DB의 "안전" 판정만. 안전 규칙·AI 판정은 기본 해제다.
 - 체크할 수 없는 경우:
   - 보호 대상, `action ≠ quarantine`, 동기화 루트 안, 리파스 포인트 폴더, 보기 전용 볼륨(C: 이외)
-  - 자격 증명 보호 경로(자격 증명·브라우저 프로필·`%LOCALAPPDATA%\Packages`·`%APPDATA%\Microsoft\{Protect,Credentials,Crypto}`)와 그 하위 전부(Q2, U1), 그리고 이를 품은 상위 폴더(S2)
+  - 자격 증명 보호 경로(자격 증명·브라우저 프로필·`%LOCALAPPDATA%\Packages`·`%APPDATA%\Microsoft\{Protect,Credentials,Crypto}`·`%LOCALAPPDATA%\Microsoft\Credentials`)와 그 하위 전부(Q2, U1), 그리고 이를 품은 상위 폴더(S2)
   - `%LOCALAPPDATA%\Programs` 하위(설치된 앱, `uninstall_app`)
   - 확보량이 "계산 중"이거나 "취소됨"(D13)
 - 체크하면 경고 모달이 뜨는 경우: 그 밖의 "사용자 데이터"와 "모름"(Q2)
@@ -248,14 +254,18 @@ src/components/{GradeBadge,RuleGroupRow,SelectionBar,WarningModal,CategoryCards}
   - 규칙이 여러 개 걸리면 가장 구체적인 규칙이 이긴다.
   - 안전 규칙이 고정한 폴더 자체는 규칙으로 바꿀 수 없다.
 - **패턴(`pattern.rs`)**: 환경 변수 전개, `**\name`, 구성요소 경계(`node_modules2`는 불일치), 대소문자, `when` 조건(옆 파일 있음/없음).
-- **`not_inside`**: `%LOCALAPPDATA%\Programs\<앱>\resources\app\node_modules`(옆에 `package.json` 있음), `%APPDATA%\npm\node_modules`, `Program Files\<앱>\...\node_modules`는 "안전"이 아니다. `%LOCALAPPDATA%\Programs\<앱>`은 `uninstall_app`이고 선택 불가다.
+- **앱 설치 위치 제외 목록**: 제외 목록의 다섯 위치 각각과 `**\` 규칙 세 개(`node_modules`, `.next`, `target`)를 모두 조합해 픽스처를 만든다. 옆 파일 조건(`package.json`·`Cargo.toml`)을 만족해도 어느 조합도 "안전"이 아니다. 대표 사례: `%LOCALAPPDATA%\Programs\<앱>\resources\app\node_modules`, `%APPDATA%\npm\node_modules`, `Program Files\<앱>\target`, `Packages\<앱>\LocalCache\.next`.
+  - 제외 목록 밖의 같은 구조(예: `C:\work\proj\node_modules`)는 "안전"이다(제외가 너무 넓지 않은지 확인).
+  - 사용자 규칙(`source=user`)의 `**\` 패턴에도 제외가 적용된다.
+  - 환경 변수 접두 규칙(`%LOCALAPPDATA%\npm-cache`)에는 적용되지 않는다.
+  - `%LOCALAPPDATA%\Programs\<앱>`은 `uninstall_app`이고 선택 불가다.
 - **규칙 DB**:
   - 버전이 올라가면 내장 규칙이 바뀌고 사용자 규칙은 남는다.
   - 같은 버전이면 아무것도 바꾸지 않는다.
   - JSON이 깨졌으면 규칙 없이 동작하고 경고 플래그가 선다.
   - 테스트 DB는 픽스처 폴더에 만든다.
 - **보호(`protect.rs`)**: 보호 경로마다 대소문자, 끝 `\`, `\\?\` 접두, 8.3 이름(`PROGRA~1`; 8.3 생성이 꺼진 볼륨이면 건너뛰고 기록) 변형. 드라이브 루트와 사용자 폴더 루트. `%SystemRoot%`가 C:가 아닐 때. 정규화 실패 시 거부.
-- **S2**: 하위에 가짜 동기화 루트, `.vhdx`, 격리함 이름 폴더, 시스템 보호 경로, 자격 증명 보호 경로(예: 가짜 `Google\Chrome\User Data`, `Microsoft\Protect`)가 있는 폴더는 선택 불가다. 1 GiB 기준 아래에 숨은 경우도 포함한다. 예: 가짜 `%LOCALAPPDATA%\Google`은 규칙이 없어도("모름") 선택이 거부된다.
+- **S2**: 하위에 가짜 동기화 루트, `.vhdx`, 격리함 이름 폴더, 시스템 보호 경로, 자격 증명 보호 경로(예: 가짜 `Google\Chrome\User Data`, `%APPDATA%\Microsoft\Protect`, `%LOCALAPPDATA%\Microsoft\Credentials`)가 있는 폴더는 선택 불가다. 1 GiB 기준 아래에 숨은 경우도 포함한다. 예: 가짜 `%LOCALAPPDATA%\Google`은 규칙이 없어도("모름") 선택이 거부된다.
 - **S7·S9·S11**: 동기화 루트 안 노드, 정션 폴더, `.vhdx`를 품은 폴더는 선택 불가다.
 - **S3·S12 판정 함수**: 스캔 뒤 폴더를 정션으로 바꾸거나 동기화 루트를 추가하면 `check_item`이 이유와 함께 거부한다(M4가 이 함수를 그대로 쓴다).
 - **선택 정책**: 기본 체크는 규칙 "안전"만이다. 부모를 체크하면 자식은 비활성화된다. "계산 중/취소됨"은 선택이 거부되고 합계에서 빠진다(D13). 자격 증명 폴더와 `Packages` 하위(`LocalCache`, `TempState` 포함)는 규칙이 "안전"으로 걸려도 선택 불가다(Q2, U1).
@@ -289,8 +299,8 @@ src/components/{GradeBadge,RuleGroupRow,SelectionBar,WarningModal,CategoryCards}
 | SPEC 안전 규칙 | 사용자 데이터 고정 목록, git 저장소, 큰 민감 파일 | 판정 우선순위 1, 스캔 변경 |
 | SPEC 문구 모순 | "절대 목록에 올리지 않는 경로" vs M2 표시 | Q4 결정, SPEC v1.5 반영 완료 |
 | 사용자 요청(2026-10-24) | `Packages` 안 캐시 폴더 개별 허용 가능 여부 | 미결 U1 |
-| 사용자 검토(2026-10-24) 1 | 크롬 프로필 등을 품은 상위 폴더가 "모름+경고"로 선택 가능 | S2 보호 대상에 자격 증명 보호 경로 추가(`%APPDATA%\Microsoft\Protect·Credentials·Crypto` 포함) |
-| 사용자 검토(2026-10-24) 2 | Electron 앱·전역 npm의 `node_modules`가 "안전"으로 잡힘 | `not_inside` 추가, `%LOCALAPPDATA%\Programs` 하위는 `uninstall_app` |
+| 사용자 검토(2026-10-24) 1 | 크롬 프로필 등을 품은 상위 폴더가 "모름+경고"로 선택 가능 | S2 보호 대상에 자격 증명 보호 경로 추가(`%APPDATA%\Microsoft\Protect·Credentials·Crypto`, `%LOCALAPPDATA%\Microsoft\Credentials` 포함) |
+| 사용자 검토(2026-10-24) 2 | Electron 앱·전역 npm의 `node_modules`가 "안전"으로 잡힘 | 앱 설치 위치 제외 목록을 공통으로 정의해 모든 `**\` 규칙(`.next`, `target` 포함)에 적용, `%LOCALAPPDATA%\Programs` 하위는 `uninstall_app` |
 | 사용자 검토(2026-10-24) 3 | git 의존성 `.git` 때문에 `node_modules`가 `user_data`로 고정 | 규칙에 걸린 폴더 안의 `.git`은 전파하지 않음 |
 | 사용자 검토(2026-10-24) 4~10 | 판정 단계, 동시 실행, 묶음 부분 선택, 구체성, Temp 기준일, 감지 실패, `.kdbx` | 미결 U3~U9(eng 리뷰) |
 | M2 다음 단계 목록 | 규칙에 걸린 폴더에서 탐색 멈추기, 선택 정책, S2·S3·S9 | 스캔 변경, 선택 정책, 보호 |
