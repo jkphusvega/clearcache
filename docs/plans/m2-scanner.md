@@ -7,7 +7,8 @@
 > - 검증 4단계(2026-10-23): 이 PC에는 uv 캐시·pnpm 저장소·HuggingFace 캐시가 없어 두 곳만 비교했다. `logical_bytes`가 독립 합산(PowerShell `Get-ChildItem` 길이 합, 탐색기 "크기"와 같은 방식)과 바이트 단위로 일치한다.
 >   - `C:\Windows\WinSxS`: 파일 139,616개, 20,265,753,644 B(일치). exclusive 10,112,541,393 B / shared 9,087,141,000 B / 미검증 1개.
 >   - `~\.ollama\models`: 파일 6개, 4,661,228,100 B(일치). 허용 목록 밖이라 logical만.
->   - 남은 것: DISM `AnalyzeComponentStore` 값(관리자 필요, 사용자 실행)과 WinSxS exclusive 비교, 탐색기 "디스크 할당 크기" 비교, 화면 확인(사용자).
+>   - DISM `AnalyzeComponentStore`(사용자 실행, GB = 10⁹ B): 탐색기 기준 20.26 GB(logical과 일치), 공유됨 9.02 GB vs shared 9.09 GB(+0.8%), 백업·기능 사용 안 함 9.96 GB vs exclusive 10.11 GB(+1.5%), 실제 크기 18.98 GB vs 합 19.20 GB(+1.2%). 방향과 비율이 맞아 통과. 초과분은 할당 크기(클러스터 올림) 탓으로 추정(미검증). 중립 라벨은 유지한다(DISM상 정리 가능 패키지 8개, 확보량은 정리 후에만 확정).
+>   - 화면 확인: 사용자 확인 완료, 이상 없음. 남은 것: 탐색기 "디스크 할당 크기" 비교(선택).
 > - 남은 할 일:
 >   - 디자인 리뷰(/plan-design-review)는 M3 계획 때 한다(네 종류 카드 화면).
 >   - 라이선스(현재 MIT 임시)는 M3 규칙 작성 전에 확정한다.
