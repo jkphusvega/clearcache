@@ -552,3 +552,52 @@ fn audit_13_scan_config_system_root_from_the_os() {
     let c = ScanConfig::for_target(&t, KIB);
     assert_eq!(c.policy.system_root, crate::core::paths::windows_dir());
 }
+
+// --- 2nd audit (2026-11-12) ---
+
+/// D1: `\\?\` is for reading only; node paths stay plain, as the UI shows them.
+#[test]
+fn audit2_d1_node_paths_are_plain() {
+    let fx = fixture();
+    let root = fx.path();
+    write_file(&root.join("w").join("sub").join("f.bin"), 4 * KIB as usize);
+    write_file(&root.join("w").join("g.bin"), 4 * KIB as usize);
+    let (r, _) = walk_only(&cfg(root));
+    assert!(r.nodes.len() > 1, "{:?}", r.nodes);
+    for n in &r.nodes {
+        assert!(!n.path.starts_with(r"\\?\"), "{}", n.path);
+        assert!(Path::new(&n.path).starts_with(root), "{}", n.path);
+    }
+    assert!(r
+        .nodes
+        .iter()
+        .any(|n| n.path == root.join("w").join("sub").to_string_lossy()));
+}
+
+/// C2: every sync source failed and the user folder is written with `..`: compared in the
+/// normalized form, the user folder still blocks accounting inside it.
+#[test]
+fn audit2_c2_user_folder_with_dotdot_blocks_accounting() {
+    use syncroots::SyncRootSource;
+    struct Broken;
+    impl SyncRootSource for Broken {
+        fn name(&self) -> &'static str {
+            "broken"
+        }
+        fn read(&self) -> Result<Vec<PathBuf>, String> {
+            Err("denied".into())
+        }
+    }
+    let fx = fixture();
+    let root = fx.path();
+    let cache = root.join("home").join("uvcache");
+    write_file(&cache.join("a.whl"), 3000);
+    let mut c = cfg(root);
+    c.user_home = Some(root.join("home").join("..").join("home"));
+    c.accounting_roots = vec![cache];
+    let sync = SyncRootDetection::detect(&[Box::new(Broken)]);
+    assert!(sync.all_failed);
+    let (r, plan) = walk_phase(&c, &sync, &Progress::default()).unwrap();
+    assert_eq!(node(&r, "uvcache").accounting, AccountingState::Unverified);
+    assert!(plan.scopes.is_empty());
+}

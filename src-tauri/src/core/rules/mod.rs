@@ -8,7 +8,9 @@ pub mod source;
 use serde::{Deserialize, Serialize};
 
 use crate::core::paths;
-use crate::core::protect::{self, CanonPath, ProtectContext, Protection, Reason, Stop};
+use crate::core::protect::{
+    self, CanonPath, ProtectContext, Protection, Protections, Reason, Stop,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -241,8 +243,8 @@ fn system_action(ctx: &ProtectContext, c: &CanonPath) -> Action {
 #[derive(Debug, Clone, Default)]
 pub struct Facts<'a> {
     pub path: Option<&'a CanonPath>,
-    /// From the path and from what the scan lifted out of the subtree.
-    pub protection: Option<Protection>,
+    /// Every reason, from the path and from what the scan lifted out of the subtree.
+    pub protection: Protections,
     /// The most specific rule matching this folder.
     pub rule: Option<&'a Rule>,
     /// The nearest ancestor's rule that did not stop the walk (Downloads, `Programs\*`).
@@ -263,7 +265,10 @@ pub struct Verdict {
     pub reason: String,
     pub source: VerdictSource,
     pub rule_id: Option<String>,
+    /// The strongest reason, shown and used for the column.
     pub protection: Option<Protection>,
+    /// Every reason; any one blocks selection.
+    pub protections: Protections,
 }
 
 impl Verdict {
@@ -288,13 +293,14 @@ pub fn judge(ctx: &ProtectContext, f: &Facts) -> Verdict {
         reason: reason.to_string(),
         source,
         rule_id: rule.map(|r| r.id.clone()),
-        protection: f.protection.clone(),
+        protection: f.protection.primary(),
+        protections: f.protection.clone(),
     };
     let safety =
         |grade, action, reason| verdict(grade, action, reason, VerdictSource::Safety, None);
 
     // 1. Safety rules. `Contains` blocks selection but leaves grade and action alone (D13).
-    if let Some(Protection::Self_(r)) = &f.protection {
+    if let Some(Protection::Self_(r)) = f.protection.primary() {
         return match r {
             Reason::System => {
                 let (action, reason) = system_item(ctx, f.path);
@@ -458,7 +464,7 @@ mod tests {
         let c = canon(path);
         let depth = personal_folder(&ctx, &c);
         let mut facts = Facts {
-            protection: ctx.path_protection(Path::new(path)),
+            protection: ctx.path_protections(Path::new(path)),
             rule: m.best(&c, &sib(siblings)),
             fixed: (depth == Some(Depth::Itself)).then_some(Fixed::PersonalFolder),
             inside_fixed: (depth == Some(Depth::Inside)).then_some(Fixed::PersonalFolder),
@@ -812,7 +818,7 @@ mod tests {
                 (Grade::UserData, VerdictSource::Safety)
             );
             let disk = judge_with(&m, path, &[], |f| {
-                f.protection = Some(Self_(Reason::VirtualDisk))
+                f.protection = Self_(Reason::VirtualDisk).into()
             });
             assert_eq!(
                 (disk.action, disk.source, disk.category()),
@@ -823,12 +829,12 @@ mod tests {
                 )
             );
             let cred = judge_with(&m, path, &[], |f| {
-                f.protection = Some(Self_(Reason::CredentialFile { name: ".kdbx" }))
+                f.protection = Self_(Reason::CredentialFile { name: ".kdbx" }).into()
             });
             assert_eq!(cred.action, Action::ExplainOnly);
             // S2: the rule's grade stands, but the verdict carries the block.
             let holds = judge_with(&m, path, &[], |f| {
-                f.protection = Some(Contains(Reason::VirtualDisk))
+                f.protection = Contains(Reason::VirtualDisk).into()
             });
             assert_eq!(holds.grade, Grade::Safe);
             assert_eq!(holds.protection, Some(Contains(Reason::VirtualDisk)));
@@ -845,10 +851,9 @@ mod tests {
             r"C:\Users\me\AppData\Local",
         ] {
             let v = judge_with(&m, path, &[], |f| {
-                f.protection = f
-                    .protection
-                    .take()
-                    .or(Some(Contains(Reason::CredentialPath)))
+                if f.protection.is_empty() {
+                    f.protection = Contains(Reason::CredentialPath).into();
+                }
             });
             assert_eq!(
                 (v.grade, v.action, v.category()),

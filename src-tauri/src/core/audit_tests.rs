@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::protect::{
     self, check_item, file_protection, CanonPath, ItemSnapshot, NoStopFolders, ProtectContext,
-    Protection, Reason, Refusal, Stop, StopFolders,
+    Protection, Protections, Reason, Refusal, Stop, StopFolders,
 };
 use crate::core::rules::pattern::RuleMatcher;
 use crate::core::rules::source::{BuiltinRules, RuleSource};
@@ -30,7 +30,7 @@ fn builtin() -> RuleMatcher {
 fn dir() -> ItemSnapshot {
     ItemSnapshot {
         is_dir: true,
-        protection: None,
+        protection: Protections::default(),
         below_stop_folder: false,
     }
 }
@@ -649,7 +649,7 @@ fn audit_08_more_root_folders() {
             &ctx,
             &Facts {
                 path: Some(&c),
-                protection: ctx.path_protection(Path::new(path)),
+                protection: ctx.path_protections(Path::new(path)),
                 rule: m.best(&c, &[]),
                 ..Facts::default()
             },
@@ -777,4 +777,276 @@ fn audit_11_hugging_face_token_is_not_in_the_rule() {
         Some("huggingface-cache")
     );
     assert_eq!(best(&m, r"C:\Users\me\.cache\huggingface\token", &[]), None);
+}
+
+// ===== 2nd audit (2026-11-12): `audit2_<finding>_…` =====
+
+/// A1: a folder whose name has an unpaired surrogate, next to a twin named with U+FFFD. A
+/// lossy name would open the twin twice and never the real folder.
+#[test]
+fn audit2_a1_unpaired_surrogate_twin() {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    let fx = testzone::fixture();
+    let proj = fx.path().join("proj");
+    let odd = proj.join(OsString::from_wide(&[u16::from(b'a'), 0xD800]));
+    fs::create_dir_all(crate::core::paths::verbatim(&odd)).unwrap();
+    fs::write(crate::core::paths::verbatim(&odd.join("db.kdbx")), b"x").unwrap();
+    fs::write(crate::core::paths::verbatim(&odd.join("ext4.vhdx")), b"x").unwrap();
+    write_file(&proj.join("a\u{FFFD}").join("ok.txt"), 4);
+    let refused = refusal(check_item(&ctx(), &proj, &dir(), &NoStopFolders));
+    assert!(
+        matches!(
+            refused.reason(),
+            Reason::VirtualDisk | Reason::CredentialFile { .. }
+        ),
+        "{refused:?}"
+    );
+}
+
+/// A2, reproduction 1: a vault-named folder inside `node_modules` must not hide the browser
+/// profile below it (`.opvault` stops at the rule folder, the profile does not).
+#[test]
+fn audit2_a2_vault_name_does_not_hide_a_profile() {
+    let fx = testzone::fixture();
+    let proj = fx.path().join("proj");
+    write_file(&proj.join("package.json"), 10);
+    write_file(
+        &proj.join(r"node_modules\x.opvault\Google\Chrome\User Data\Default\Login Data"),
+        10,
+    );
+    assert_eq!(
+        refusal(check_item(&ctx(), &proj, &dir(), &builtin())),
+        Contains(Reason::CredentialPath)
+    );
+    // Without the profile the vault alone is bounded by the rule folder (D12).
+    let fx = testzone::fixture();
+    let proj = fx.path().join("proj");
+    write_file(&proj.join("package.json"), 10);
+    fs::create_dir_all(proj.join(r"node_modules\x.opvault\data")).unwrap();
+    assert_eq!(check_item(&ctx(), &proj, &dir(), &builtin()), Ok(()));
+}
+
+/// A2, reproduction 2: a sync root registered below a `.ssh` inside `node_modules`.
+#[test]
+fn audit2_a2_ssh_name_does_not_hide_a_sync_root() {
+    let fx = testzone::fixture();
+    let proj = fx.path().join("proj");
+    write_file(&proj.join("package.json"), 10);
+    let od = proj.join(r"node_modules\pkg\.ssh\od");
+    fs::create_dir_all(&od).unwrap();
+    let det = SyncRootDetection::with_roots(vec![od]);
+    let ctx = ProtectContext::new(env, &det);
+    assert_eq!(
+        refusal(check_item(&ctx, &proj, &dir(), &builtin())),
+        Contains(Reason::SyncRoot)
+    );
+    // The path reports both reasons; the shown one is the stronger.
+    let ps = ctx.path_protections(&proj.join(r"node_modules\pkg\.ssh\od\x"));
+    assert!(ps.self_.contains(&Reason::SyncRoot), "{ps:?}");
+    assert!(
+        ps.self_.contains(&Reason::CredentialDir { name: ".ssh" }),
+        "{ps:?}"
+    );
+    assert_eq!(ps.primary(), Some(Self_(Reason::SyncRoot)));
+}
+
+/// A3: an 8.3 alias of a Korean name (`인천대~1`) is longer than 8 bytes but must still be
+/// expanded before comparing.
+#[test]
+fn audit2_a3_non_ascii_short_name_is_expanded() {
+    for name in ["인천대~1", "PROGRA~1", "FILE~12.TXT", "長い名~3.dat"] {
+        assert!(protect::looks_short_for_test(name), "{name}");
+    }
+    for name in ["$WINDOWS.~BT", "~cache", "a~b", "file~", "x~1a"] {
+        assert!(!protect::looks_short_for_test(name), "{name}");
+    }
+    let fx = testzone::fixture();
+    let long = fx.path().join("인천대학교 동기화 자료 폴더");
+    fs::create_dir_all(long.join("inner")).unwrap();
+    let Some(alias) =
+        protect::short_name_for_test(&long).filter(|a| a.to_string_lossy().contains('~'))
+    else {
+        eprintln!("skipped: no 8.3 alias generated on the TestZone volume");
+        return;
+    };
+    let det = SyncRootDetection::with_roots(vec![long.clone()]);
+    let ctx = ProtectContext::new(env, &det);
+    assert_eq!(CanonPath::new(&alias), CanonPath::new(&long), "{alias:?}");
+    assert_eq!(
+        ctx.path_protection(&alias.join("inner")),
+        Some(Self_(Reason::SyncRoot)),
+        "{alias:?}"
+    );
+    assert!(check_item(&ctx, &alias.join("inner"), &dir(), &NoStopFolders).is_err());
+}
+
+/// A4: a sync root registered through a junction also protects the folder the junction
+/// leads to, which is what the walk sees.
+#[test]
+fn audit2_a4_sync_root_behind_a_link() {
+    let fx = testzone::fixture();
+    let data = fx.path().join("data");
+    fs::create_dir_all(data.join(r"od\docs")).unwrap();
+    let link = fx.path().join("link");
+    testzone::junction(&link, &data);
+    let det = SyncRootDetection::with_roots(vec![link.join("od")]);
+    assert!(det.contains(&data.join(r"od\docs")), "{:?}", det.roots);
+    let ctx = ProtectContext::new(env, &det);
+    assert_eq!(
+        ctx.path_protection(&data.join(r"od\docs")),
+        Some(Self_(Reason::SyncRoot))
+    );
+    assert_eq!(
+        refusal(check_item(&ctx, &data, &dir(), &NoStopFolders)),
+        Contains(Reason::SyncRoot)
+    );
+}
+
+/// B3: Node installs from version managers, and any folder with `node.exe` next to its
+/// `node_modules`.
+#[test]
+fn audit2_b3_node_installs_are_excluded() {
+    let m = builtin();
+    let pj = &["package.json"];
+    for path in [
+        r"C:\Users\me\AppData\Roaming\nvm\v20.11.0\node_modules\npm\node_modules",
+        r"C:\Users\me\AppData\Roaming\fnm\node-versions\v20\installation\node_modules\npm\node_modules",
+        r"C:\Users\me\AppData\Local\fnm_multishells\123_456\node_modules",
+        r"C:\Users\me\AppData\Local\Volta\tools\image\node\20.11.0\node_modules\npm\node_modules",
+    ] {
+        assert_eq!(best(&m, path, pj), None, "{path}");
+    }
+    // Relocated managers through their own variables.
+    let rules = BuiltinRules::embedded().rules().unwrap().rules;
+    let custom = RuleMatcher::new(&rules, &|k| match k {
+        "NVM_HOME" => Some(PathBuf::from(r"D:\tools\nvm")),
+        "FNM_DIR" => Some(PathBuf::from(r"D:\tools\fnm")),
+        "VOLTA_HOME" => Some(PathBuf::from(r"D:\tools\volta")),
+        _ => env(k),
+    });
+    for path in [
+        r"D:\tools\nvm\v18\node_modules",
+        r"D:\tools\fnm\node-versions\v20\installation\node_modules",
+        r"D:\tools\volta\tools\image\node\20\node_modules",
+    ] {
+        assert_eq!(best(&custom, path, pj), None, "{path}");
+    }
+    // `node.exe` next to `node_modules`: excluded, and so is everything below (check_item).
+    assert_eq!(
+        best(&m, r"C:\nodejs\node_modules", &["node.exe", "npm.cmd"]),
+        None
+    );
+    let fx = testzone::fixture();
+    let tools = fx.path().join("tools");
+    write_file(&tools.join(r"nodejs\node.exe"), 10);
+    write_file(&tools.join(r"nodejs\node_modules\npm\package.json"), 10);
+    write_file(
+        &tools.join(r"nodejs\node_modules\npm\node_modules\x\db.kdbx"),
+        10,
+    );
+    assert_eq!(
+        refusal(check_item(&ctx(), &tools, &dir(), &builtin())),
+        Contains(Reason::CredentialFile { name: ".kdbx" })
+    );
+}
+
+/// B4: backup endings stack; SSH private keys outside `.ssh`.
+#[test]
+fn audit2_b4_more_name_variants() {
+    for (name, want) in [
+        ("db.kdbx.bak2", ".kdbx"),
+        ("db.kdbx.1", ".kdbx"),
+        ("db.kdbx.old.bak", ".kdbx"),
+        ("db.kdbx.2026-01-01.bak", ".kdbx"),
+        ("db.kdbx.20260101", ".kdbx"),
+        ("db.kdbx.bak~", ".kdbx"),
+        ("db.kdbx.save", ".kdbx"),
+        ("id_rsa", "id_rsa"),
+        ("id_ed25519", "id_ed25519"),
+        ("id_ecdsa", "id_ecdsa"),
+        ("id_rsa.bak", "id_rsa"),
+    ] {
+        let got = file_protection(name);
+        assert!(
+            matches!(got, Some(Reason::CredentialFile { name: n }) if n.ends_with(want)),
+            "{name:?}: {got:?}"
+        );
+    }
+    for name in [
+        ".env",
+        ".npmrc",
+        "id_rsa.pub",
+        "notes.1",
+        "db.kdbx.v2",
+        "report.2026-01-01",
+        "Login Data",
+    ] {
+        assert_eq!(file_protection(name), None, "{name:?}");
+    }
+    // In a project folder, outside `.ssh`.
+    let fx = testzone::fixture();
+    let proj = fx.path().join("proj");
+    write_file(&proj.join(r"deploy\id_ed25519"), 10);
+    assert_eq!(
+        refusal(check_item(&ctx(), &proj, &dir(), &NoStopFolders)),
+        Contains(Reason::CredentialFile { name: "id_ed25519" })
+    );
+}
+
+/// B5: exclusions that cannot be resolved fail closed instead of disappearing.
+#[test]
+fn audit2_b5_unresolved_exclusions_fail_closed() {
+    let rules = BuiltinRules::embedded().rules().unwrap().rules;
+    let no_appdata = RuleMatcher::new(&rules, &|k| if k == "APPDATA" { None } else { env(k) });
+    assert_eq!(
+        best(
+            &no_appdata,
+            r"C:\Users\me\AppData\Roaming\npm\node_modules\pkg\node_modules",
+            &["package.json"]
+        ),
+        None
+    );
+    // `**\` rules are off altogether; located ones still work.
+    assert_eq!(
+        best(&no_appdata, r"C:\work\proj\node_modules", &["package.json"]),
+        None
+    );
+    assert_eq!(
+        best(&no_appdata, r"C:\Users\me\AppData\Local\npm-cache", &[]),
+        Some("npm-cache")
+    );
+    // Optional variables (set only when the tool is installed) do not turn anything off.
+    assert_eq!(
+        best(&builtin(), r"C:\work\proj\node_modules", &["package.json"]),
+        Some("node-modules")
+    );
+    // A `not_inside` that cannot be resolved turns its rule off.
+    let mut r = rule("c", r"**\.cache", Grade::Safe);
+    r.when.not_inside = vec![r"%NOSUCHVAR%\keep".into()];
+    let m = RuleMatcher::new(&[r], &env);
+    assert_eq!(best(&m, r"C:\work\.cache", &[]), None);
+}
+
+/// C1: a root registered by its 8.3 alias is stored expanded, so `contains` (used by the
+/// scan's sync-root marking and accounting) agrees with the protection check.
+#[test]
+fn audit2_c1_short_name_root_is_stored_expanded() {
+    let fx = testzone::fixture();
+    let long = fx.path().join("Long Sync Root Folder");
+    fs::create_dir_all(long.join("inner")).unwrap();
+    let Some(alias) =
+        protect::short_name_for_test(&long).filter(|a| a.to_string_lossy().contains('~'))
+    else {
+        eprintln!("skipped: no 8.3 alias generated on the TestZone volume");
+        return;
+    };
+    let det = SyncRootDetection::detect(&[src(
+        "sync_root_manager",
+        Ok(vec![alias.to_str().unwrap()]),
+        true,
+    )]);
+    assert!(det.sources[0].error.is_none());
+    assert!(det.contains(&long.join("inner")), "{:?}", det.roots);
+    assert!(!det.roots[0].contains('~'), "{:?}", det.roots);
 }

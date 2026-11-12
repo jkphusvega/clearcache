@@ -33,7 +33,31 @@ pub const APP_INSTALL_EXCLUDES: &[(&str, &str)] = &[
     ("USERPROFILE", ".bun"),
     ("USERPROFILE", r"scoop\apps"),
     ("SCOOP", "apps"),
+    // Node version managers: nvm-windows, fnm, Volta (2nd audit B3).
+    ("APPDATA", "nvm"),
+    ("NVM_HOME", ""),
+    ("NVM_SYMLINK", ""),
+    ("APPDATA", "fnm"),
+    ("LOCALAPPDATA", "fnm_multishells"),
+    ("FNM_DIR", ""),
+    ("LOCALAPPDATA", "Volta"),
+    ("VOLTA_HOME", ""),
 ];
+
+/// Variables every Windows profile has. If one of these cannot be resolved the exclusions
+/// above are incomplete, so `**\` rules match nothing rather than risk matching inside an app
+/// (2nd audit B5). The others are set only when the tool is installed; unset means "not used".
+pub const REQUIRED_VARS: &[&str] = &[
+    "LOCALAPPDATA",
+    "APPDATA",
+    "USERPROFILE",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+];
+
+/// Files that mark a folder as an installed program: no `**\` rule matches at or below a
+/// folder listing one (a Node install keeps `node.exe` next to its `node_modules`, B3).
+pub const INSTALL_MARKERS: &[&str] = &["node.exe"];
 
 /// The same, by name wherever they appear: an Electron app's bundled sources.
 pub const APP_INSTALL_NAMED: &[&[&str]] =
@@ -101,7 +125,8 @@ enum Compiled {
         any_child: bool,
     },
     Named(Vec<String>),
-    /// Unset variable or unparsable pattern: never matches.
+    /// Unset variable, unparsable pattern, or a `not_inside` location that cannot be
+    /// resolved: never matches.
     Unavailable,
 }
 
@@ -118,6 +143,8 @@ pub struct RuleMatcher {
     entries: Vec<Entry>,
     excludes: Vec<CanonPath>,
     local_app_data: Option<CanonPath>,
+    /// A required variable could not be resolved: `**\` rules are off (B5).
+    named_off: bool,
 }
 
 /// `app-1.0.9`: the per-version folder of an app installed by Squirrel under
@@ -135,36 +162,43 @@ impl RuleMatcher {
         };
         let entries = rules
             .iter()
-            .map(|rule| Entry {
-                rule: rule.clone(),
-                pattern: match parse(&rule.pattern) {
-                    Ok(PatternSpec::Named(names)) => Compiled::Named(names),
-                    Ok(PatternSpec::Located {
-                        var,
-                        comps,
-                        any_child,
-                    }) => match expand(env, &var, &comps) {
+            .map(|rule| {
+                // A `not_inside` that cannot be resolved turns the rule off instead of being
+                // dropped, which would widen the rule (B5).
+                let not_inside: Option<Vec<CanonPath>> =
+                    rule.when.not_inside.iter().map(|p| located(p)).collect();
+                let pattern = match (parse(&rule.pattern), &not_inside) {
+                    (_, None) | (Err(_), _) => Compiled::Unavailable,
+                    (Ok(PatternSpec::Named(names)), _) => Compiled::Named(names),
+                    (
+                        Ok(PatternSpec::Located {
+                            var,
+                            comps,
+                            any_child,
+                        }),
+                        _,
+                    ) => match expand(env, &var, &comps) {
                         Some(base) => Compiled::Located { base, any_child },
                         None => Compiled::Unavailable,
                     },
-                    Err(_) => Compiled::Unavailable,
-                },
-                not_inside: rule
-                    .when
-                    .not_inside
-                    .iter()
-                    .filter_map(|p| located(p))
-                    .collect(),
+                };
+                Entry {
+                    rule: rule.clone(),
+                    pattern,
+                    not_inside: not_inside.unwrap_or_default(),
+                }
             })
             .collect();
+        let resolve = |var: &str, rel: &str| CanonPath::new(&env(var)?.join(rel));
         let excludes = APP_INSTALL_EXCLUDES
             .iter()
-            .filter_map(|(var, rel)| CanonPath::new(&env(var)?.join(rel)))
+            .filter_map(|(var, rel)| resolve(var, rel))
             .collect();
         Self {
             entries,
             excludes,
-            local_app_data: env("LOCALAPPDATA").and_then(|p| CanonPath::new(&p)),
+            local_app_data: resolve("LOCALAPPDATA", ""),
+            named_off: REQUIRED_VARS.iter().any(|v| resolve(v, "").is_none()),
         }
     }
 
@@ -193,7 +227,12 @@ impl RuleMatcher {
                 base,
                 any_child: true,
             } => path.comps.len() == base.comps.len() + 1 && path.starts_with(base),
-            Compiled::Named(names) => path.ends_with(names) && !self.in_app_install(path),
+            Compiled::Named(names) => {
+                !self.named_off
+                    && path.ends_with(names)
+                    && !self.in_app_install(path)
+                    && !is_install_root(siblings)
+            }
             Compiled::Unavailable => false,
         };
         hit && e
@@ -234,11 +273,22 @@ impl RuleMatcher {
     }
 }
 
+/// The files of a listing mark an installed program (`INSTALL_MARKERS`).
+pub fn is_install_root(files: &[String]) -> bool {
+    files
+        .iter()
+        .any(|f| INSTALL_MARKERS.iter().any(|m| paths::eq_ci(f, m)))
+}
+
 impl StopFolders for RuleMatcher {
     fn stop(&self, dir: &Path, files: &[String]) -> Option<Stop> {
         CanonPath::new(dir)
             .and_then(|c| self.best(&c, files))
             .and_then(Rule::stop)
+    }
+
+    fn install_root(&self, files: &[String]) -> bool {
+        is_install_root(files)
     }
 }
 

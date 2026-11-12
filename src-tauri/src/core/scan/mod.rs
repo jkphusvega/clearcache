@@ -14,6 +14,7 @@ use std::time::Instant;
 
 use crate::core::accounting::{self, AccountingUpdate, FileOpener, Scope};
 use crate::core::paths;
+use crate::core::protect::CanonPath;
 use crate::core::targets::{ScanTarget, TargetKind};
 use policy::PolicyContext;
 use progress::{Phase, Progress};
@@ -379,6 +380,7 @@ fn plan_accounting(
     sync: &SyncRootDetection,
 ) -> AccountingPlan {
     let mut scopes: Vec<Scope> = Vec::new();
+    let home = cfg.user_home.as_deref().and_then(CanonPath::new);
     for n in nodes.iter_mut() {
         if n.is_file || n.logical_bytes.is_none() {
             continue;
@@ -391,14 +393,16 @@ fn plan_accounting(
         {
             continue;
         }
-        // Fail closed: without a user folder there is no telling what is inside it.
+        // Fail closed: without a usable user folder (missing, or one that cannot be put in
+        // comparison form, such as one holding `..`) there is no telling what is inside it.
+        // Compared in the same normalized form as `ProtectContext` (2nd audit C2).
         let blocked = n.in_sync_root
-            || cfg.user_home.is_none()
-            || (sync.all_failed
-                && cfg
-                    .user_home
-                    .as_deref()
-                    .is_some_and(|h| paths::is_within(&path, h)));
+            || match &home {
+                None => true,
+                Some(h) => {
+                    sync.all_failed && CanonPath::new(&path).is_none_or(|c| c.starts_with(h))
+                }
+            };
         if blocked {
             n.accounting = AccountingState::Unverified;
             continue;

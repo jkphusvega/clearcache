@@ -53,21 +53,26 @@ impl SyncRootDetection {
                     // Keep every root in the form the walk compares against. One that only
                     // Windows can resolve (`C:\od\.\root`, `\\?\Volume{…}\od`) is resolved first;
                     // one that cannot be resolved fails its source instead of disappearing.
+                    // Stored in comparison form (8.3 aliases expanded), so `contains` and the
+                    // protection check agree (2nd audit C1). A root registered through a link
+                    // also protects where the link leads, since the walk only sees the target
+                    // (2nd audit A4).
                     let n = found.len();
                     let mut bad = Vec::new();
                     for p in found {
-                        let usable = if CanonPath::new(&p).is_some() {
-                            Some(p.clone())
-                        } else {
-                            paths::resolve(&p).filter(|r| CanonPath::new(r).is_some())
+                        let canon = CanonPath::new(&p)
+                            .or_else(|| paths::resolve(&p).and_then(|r| CanonPath::new(&r)));
+                        let Some(canon) = canon else {
+                            bad.push(p.to_string_lossy().into_owned());
+                            continue;
                         };
-                        match usable {
-                            Some(r) => {
-                                if !det.root_paths.iter().any(|x| paths::same_path(x, &r)) {
-                                    det.root_paths.push(r);
-                                }
+                        let stored = canon.to_path_buf();
+                        let target =
+                            paths::final_path(&stored).filter(|t| !paths::same_path(t, &stored));
+                        for r in std::iter::once(stored).chain(target) {
+                            if !det.root_paths.iter().any(|x| paths::same_path(x, &r)) {
+                                det.root_paths.push(r);
                             }
-                            None => bad.push(p.to_string_lossy().into_owned()),
                         }
                     }
                     let error = (!bad.is_empty())

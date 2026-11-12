@@ -259,11 +259,11 @@ fn enumerate(
             EntryKind::Link => {}
             EntryKind::Dir => {
                 if depth < max_depth {
-                    subdirs.push(entry.path());
+                    subdirs.push(dir.join(entry.file_name()));
                 }
             }
             EntryKind::File | EntryKind::CloudOnly => files.push(FileRec {
-                path: entry.path(),
+                path: dir.join(entry.file_name()),
                 chain: chain.clone(),
                 attrs: meta.file_attributes(),
                 size: meta.len(),

@@ -106,8 +106,8 @@ pub enum CredentialMatch {
 /// Any one of these makes its folder a credential store regardless of size (D12). The M4
 /// re-check uses the same table. Left out for false positives: `.pem` `.key` `.crt` `.cer`
 /// (dev projects), `.gpg` `.asc` (public keys; `.gnupg` is a credential path), `.jks`
-/// `.keystore` (Android), bare `id_rsa` (`.ssh` is a credential path), `logins.json` (a common
-/// name; Firefox's copy sits in a profile, which is a credential path).
+/// `.keystore` (Android), `logins.json` (a common name; Firefox's copy sits in a profile,
+/// which is a credential path), `.env` and `.npmrc` (in every project; user decision).
 pub const CREDENTIAL_FILES: &[CredentialMatch] = &[
     CredentialMatch::Ext(".kdbx"),
     CredentialMatch::Ext(".kdb"),
@@ -125,6 +125,10 @@ pub const CREDENTIAL_FILES: &[CredentialMatch] = &[
     CredentialMatch::FileName(".git-credentials"),
     // Firefox / Thunderbird key database, also found in copied profiles.
     CredentialMatch::FileName("key4.db"),
+    // SSH private keys copied outside `.ssh` (2nd audit B4). `.pub` keys stay out.
+    CredentialMatch::FileName("id_rsa"),
+    CredentialMatch::FileName("id_ed25519"),
+    CredentialMatch::FileName("id_ecdsa"),
     CredentialMatch::DirExt(".opvault"),
     CredentialMatch::DirExt(".agilekeychain"),
 ];
@@ -204,6 +208,34 @@ impl Reason {
             Reason::CredentialPath | Reason::CredentialDir { .. } | Reason::CredentialFile { .. }
         )
     }
+
+    /// Fixed order for sets and for picking the reason shown: the strongest first. Never the
+    /// order the checks happened to run in.
+    fn rank(&self) -> (u8, &'static str) {
+        match self {
+            Reason::System => (0, ""),
+            Reason::Quarantine => (1, ""),
+            Reason::SyncRoot => (2, ""),
+            Reason::CloudFile => (3, ""),
+            Reason::CredentialPath => (4, ""),
+            Reason::VirtualDisk => (5, ""),
+            Reason::CredentialFile { name } => (6, name),
+            Reason::CredentialDir { name } => (7, name),
+            Reason::Reparse => (8, ""),
+            Reason::Unresolved => (9, ""),
+            Reason::Unreadable => (10, ""),
+            Reason::DriveRoot => (11, ""),
+            Reason::UserFolderRoot => (12, ""),
+        }
+    }
+
+    /// Lifted to the parent at all (S2). Links (S9) and whole-root blocks are not targets.
+    fn lifts(&self) -> bool {
+        !matches!(
+            self,
+            Reason::Reparse | Reason::DriveRoot | Reason::UserFolderRoot
+        )
+    }
 }
 
 /// D13: `Self_` puts the folder's bytes in "건드리면 안 됨"; `Contains` blocks selection but the
@@ -232,20 +264,94 @@ impl Protection {
     /// targets. `stop_folder`: this node is a folder whose "안전"/"아마 안전" rule stops the walk
     /// (see `Reason::stops_at_rule_folder`).
     pub fn lifted(&self, stop_folder: bool) -> Option<Protection> {
-        match self.reason() {
-            Reason::Reparse | Reason::DriveRoot | Reason::UserFolderRoot => None,
-            r if stop_folder && r.stops_at_rule_folder() => None,
-            r => Some(Protection::Contains(r.clone())),
+        let r = self.reason();
+        (r.lifts() && !(stop_folder && r.stops_at_rule_folder()))
+            .then(|| Protection::Contains(r.clone()))
+    }
+}
+
+/// Every protection fact about one folder (2nd audit B1·A2). A folder can be several things
+/// at once (a `.ssh` that holds a sync root, a vault next to a virtual disk), and a rule-folder
+/// boundary must drop only the reasons it bounds. Kept sorted and deduplicated by
+/// `Reason::rank`, so neither the result nor equality depends on the order facts arrive in.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Protections {
+    #[serde(rename = "self")]
+    pub self_: Vec<Reason>,
+    pub contains: Vec<Reason>,
+}
+
+impl Protections {
+    pub fn is_empty(&self) -> bool {
+        self.self_.is_empty() && self.contains.is_empty()
+    }
+
+    pub fn has_self(&self) -> bool {
+        !self.self_.is_empty()
+    }
+
+    pub fn add(&mut self, p: Protection) {
+        let (list, r) = match p {
+            Protection::Self_(r) => (&mut self.self_, r),
+            Protection::Contains(r) => (&mut self.contains, r),
+        };
+        if let Err(at) = list.binary_search_by_key(&r.rank(), Reason::rank) {
+            list.insert(at, r);
         }
     }
 
-    /// `Self_` wins over `Contains`; otherwise the first one stays.
-    pub fn merge(a: Option<Protection>, b: Option<Protection>) -> Option<Protection> {
-        match (a, b) {
-            (Some(Protection::Contains(_)), Some(b @ Protection::Self_(_))) => Some(b),
-            (None, b) => b,
-            (a, _) => a,
+    pub fn extend(&mut self, other: &Protections) {
+        for p in other.iter() {
+            self.add(p);
         }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Protection> + '_ {
+        self.self_
+            .iter()
+            .cloned()
+            .map(Protection::Self_)
+            .chain(self.contains.iter().cloned().map(Protection::Contains))
+    }
+
+    /// The one shown and used for the action and column: the strongest `Self_`, else the
+    /// strongest `Contains`.
+    pub fn primary(&self) -> Option<Protection> {
+        self.iter().next()
+    }
+
+    /// What the parent inherits (S2): every reason that lifts, as `Contains`. `stop_folder`:
+    /// this folder's built-in "안전"/"아마 안전" rule bounds credential findings (D12), so only
+    /// those reasons are dropped; location, sync, disk and the rest still go up.
+    pub fn lifted(&self, stop_folder: bool) -> Protections {
+        let mut out = Protections::default();
+        for p in self.iter().filter_map(|p| p.lifted(stop_folder)) {
+            out.add(p);
+        }
+        out
+    }
+
+    /// The same set without the reasons a rule-folder boundary stops.
+    fn unbounded(&self) -> Protections {
+        let mut out = Protections::default();
+        for p in self.iter().filter(|p| !p.reason().stops_at_rule_folder()) {
+            out.add(p);
+        }
+        out
+    }
+}
+
+impl From<Protection> for Protections {
+    fn from(p: Protection) -> Self {
+        let mut s = Protections::default();
+        s.add(p);
+        s
+    }
+}
+
+impl From<Option<Protection>> for Protections {
+    fn from(p: Option<Protection>) -> Self {
+        p.map(Protections::from).unwrap_or_default()
     }
 }
 
@@ -268,17 +374,14 @@ impl PartialEq for CanonPath {
 
 impl Eq for CanonPath {}
 
-/// `PROGRA~1`, `FILE~12.TXT`: a name Windows may have generated as an 8.3 alias. Only these
-/// are looked up, so `$WINDOWS.~BT` or `a~b` are taken as written.
+/// `PROGRA~1`, `FILE~12.TXT`, `인천대~1`: a name that may be an 8.3 alias, i.e. one whose base
+/// ends in `~` and digits. Length is not checked: aliases of non-ASCII names follow the code
+/// page and may be longer than 8 bytes (2nd audit A3), and a real long name of this shape
+/// costs only a lookup. `$WINDOWS.~BT`, `~cache` or `a~b` are taken as written.
 fn looks_short(name: &str) -> bool {
-    let (base, ext) = name.rsplit_once('.').unwrap_or((name, ""));
-    let Some((_, digits)) = base.rsplit_once('~') else {
-        return false;
-    };
-    base.len() <= 8
-        && ext.len() <= 3
-        && !digits.is_empty()
-        && digits.bytes().all(|b| b.is_ascii_digit())
+    let base = name.rsplit_once('.').map_or(name, |(b, _)| b);
+    base.rsplit_once('~')
+        .is_some_and(|(_, digits)| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
 
 impl CanonPath {
@@ -310,6 +413,19 @@ impl CanonPath {
             return Self::parse(&win::long_name(Path::new(&s))?, false);
         }
         Some(Self { root, comps })
+    }
+
+    /// The plain path of this form (`C:\a\b`), for storing and showing.
+    pub fn to_path_buf(&self) -> PathBuf {
+        let mut s = self.root.clone();
+        for c in &self.comps {
+            s.push('\\');
+            s.push_str(c);
+        }
+        if self.comps.is_empty() {
+            s.push('\\');
+        }
+        PathBuf::from(s)
     }
 
     /// `self` is `other` or lies inside it.
@@ -359,23 +475,42 @@ fn split_root(s: &str) -> Option<(String, &str)> {
     (drive && (b.len() == 2 || b[2] == b'\\')).then(|| (s[..2].to_ascii_uppercase(), &s[2..]))
 }
 
-/// Copies that keep a credential file's contents: `db.kdbx.bak` is still a password database.
-pub const BACKUP_SUFFIXES: &[&str] = &[".bak", ".old", ".orig", ".backup", ".tmp", "~"];
+/// Words a copy of a file ends in (`.bak`, `.bak2`, `.old3`, …): `db.kdbx.bak` is still a
+/// password database. Numbers, dates and a trailing `~` count too (see `strip_backup`).
+pub const BACKUP_WORDS: &[&str] = &["bak", "old", "orig", "backup", "tmp", "save"];
+
+/// Copies stack up (`db.kdbx.old.bak`), so endings are peeled off this many times at most.
+const MAX_BACKUP_LAYERS: usize = 8;
+
+/// One backup ending removed: a trailing `~`, or a last `.segment` that is a backup word with
+/// optional digits (`.bak2`), or only digits, `-` and `_` (`.1`, `.2026-01-01`, `.20260101`).
+fn strip_backup(name: &str) -> Option<&str> {
+    if let Some(rest) = name.strip_suffix('~') {
+        return (!rest.is_empty()).then_some(rest);
+    }
+    let (base, seg) = name.rsplit_once('.')?;
+    let word = seg.trim_end_matches(|c: char| c.is_ascii_digit());
+    let is_word = BACKUP_WORDS.iter().any(|w| paths::eq_ci(word, w));
+    let is_stamp = !seg.is_empty()
+        && seg
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '-' || c == '_');
+    (!base.is_empty() && (is_word || is_stamp)).then_some(base)
+}
 
 /// What a file seen in a listing makes of its folder (`Self_`): a credential store (D12) or a
 /// virtual disk holder (S11). Size does not matter for either. The name is matched as Win32
-/// would open it (trailing dots and spaces dropped: `db.kdbx.`), and also without one backup
-/// suffix (`db.kdbx.bak`), audit 9.
+/// would open it (trailing dots and spaces dropped: `db.kdbx.`), then again after each backup
+/// ending is peeled off (`db.kdbx.2026-01-01.bak`), 1st audit 9 and 2nd audit B4.
 pub fn file_protection(name: &str) -> Option<Reason> {
-    let name = name.trim_end_matches(['.', ' ']);
-    let unbacked = BACKUP_SUFFIXES
-        .iter()
-        .find(|s| paths::ends_with_ci(name, s))
-        .map(|s| name[..name.len() - s.len()].trim_end_matches(['.', ' ']));
-    [Some(name), unbacked]
-        .into_iter()
-        .flatten()
-        .find_map(file_protection_exact)
+    let mut name = name.trim_end_matches(['.', ' ']);
+    for _ in 0..=MAX_BACKUP_LAYERS {
+        if let Some(r) = file_protection_exact(name) {
+            return Some(r);
+        }
+        name = strip_backup(name)?.trim_end_matches(['.', ' ']);
+    }
+    None
 }
 
 fn file_protection_exact(name: &str) -> Option<Reason> {
@@ -486,17 +621,26 @@ impl ProtectContext {
         }
     }
 
-    /// Protection that follows from the path alone. Contents (S2, credential files, virtual
-    /// disks) and links (S9) come from the listing: the scan, or `check_item`.
+    /// The strongest protection that follows from the path alone (what is shown). Contents
+    /// (S2, credential files, virtual disks) and links (S9) come from the listing: the scan, or
+    /// `check_item`.
     pub fn path_protection(&self, path: &Path) -> Option<Protection> {
+        self.path_protections(path).primary()
+    }
+
+    /// Every protection that follows from the path alone.
+    pub fn path_protections(&self, path: &Path) -> Protections {
         match CanonPath::new(path) {
-            Some(c) => self.canon_protection(&c),
-            None => Some(Protection::Self_(Reason::Unresolved)),
+            Some(c) => self.canon_protections(&c),
+            None => Protection::Self_(Reason::Unresolved).into(),
         }
     }
 
-    fn canon_protection(&self, c: &CanonPath) -> Option<Protection> {
+    /// All checks run and all hits are kept: a name-based reason (bounded at rule folders) can
+    /// no longer hide a location or sync reason found at the same path (2nd audit A2).
+    fn canon_protections(&self, c: &CanonPath) -> Protections {
         use Protection::{Contains, Self_};
+        let mut out = Protections::default();
         let first = c.comps.first().map(String::as_str).unwrap_or("");
         if SYSTEM_DIRS.iter().any(|d| paths::eq_ci(first, d))
             || is_windows_old_n(first)
@@ -506,35 +650,40 @@ impl ProtectContext {
                 .as_ref()
                 .is_some_and(|sr| c.starts_with(sr))
         {
-            return Some(Self_(Reason::System));
+            out.add(Self_(Reason::System));
         }
         if paths::eq_ci(first, QUARANTINE_DIR) {
-            return Some(Self_(Reason::Quarantine));
+            out.add(Self_(Reason::Quarantine));
         }
-        if let Some(name) = c.comps.iter().find_map(|x| credential_dir(x)) {
-            return Some(Self_(Reason::CredentialFile { name }));
+        for name in c.comps.iter().filter_map(|x| credential_dir(x)) {
+            out.add(Self_(Reason::CredentialFile { name }));
         }
-        // Location first: a `.ssh` inside `Packages` still crosses rule folders.
         if CREDENTIAL_SUFFIXES.iter().any(|run| c.contains_run(run))
             || self.credential_dirs.iter().any(|d| c.starts_with(d))
         {
-            return Some(Self_(Reason::CredentialPath));
+            out.add(Self_(Reason::CredentialPath));
         }
-        if let Some((_, name)) = CREDENTIAL_DIRS.iter().find(|(run, _)| c.contains_run(run)) {
-            return Some(Self_(Reason::CredentialDir { name }));
+        for (_, name) in CREDENTIAL_DIRS
+            .iter()
+            .filter(|(run, _)| c.contains_run(run))
+        {
+            out.add(Self_(Reason::CredentialDir { name }));
         }
         if self.sync_roots.iter().any(|r| c.starts_with(r)) {
-            return Some(Self_(Reason::SyncRoot));
+            out.add(Self_(Reason::SyncRoot));
         }
         if c.comps.is_empty() {
-            return Some(Contains(Reason::DriveRoot));
+            out.add(Contains(Reason::DriveRoot));
         }
         if (paths::eq_ci(first, "Users") && c.comps.len() <= 2)
-            || self.user_home.as_ref().is_some_and(|h| h.starts_with(c))
+            || self
+                .user_home
+                .as_ref()
+                .is_some_and(|h| h.starts_with(c) && !c.comps.is_empty())
         {
-            return Some(Contains(Reason::UserFolderRoot));
+            out.add(Contains(Reason::UserFolderRoot));
         }
-        None
+        out
     }
 }
 
@@ -545,10 +694,10 @@ pub fn is_windows_old_n(name: &str) -> bool {
 }
 
 /// What the scan recorded for an item that is about to be acted on.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ItemSnapshot {
     pub is_dir: bool,
-    pub protection: Option<Protection>,
+    pub protection: Protections,
     /// The item lies below a stopping rule folder (a Temp member, D23), where the scan matched
     /// no rules; `check_item` then looks for no rule folders inside it either.
     pub below_stop_folder: bool,
@@ -565,9 +714,16 @@ pub enum Stop {
 }
 
 /// Where the rules stop, so that `check_item` draws its boundaries where the scan drew them.
-/// `files` holds the names of the files (not folders) next to `dir`, for `when`.
+/// `files` holds the names of the files (not folders) in the listing.
 pub trait StopFolders {
+    /// `dir`'s rule, given the files next to it.
     fn stop(&self, dir: &Path, files: &[String]) -> Option<Stop>;
+
+    /// A folder whose files mark an installed program (`node.exe`): no rule matches anywhere
+    /// below it, so nothing below can stop or bound (2nd audit B3).
+    fn install_root(&self, _files: &[String]) -> bool {
+        false
+    }
 }
 
 /// No rules loaded: every finding counts.
@@ -582,9 +738,8 @@ impl StopFolders for NoStopFolders {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Refusal {
-    Protected {
-        protection: Protection,
-    },
+    /// The strongest of the reasons found.
+    Protected { protection: Protection },
     /// Every sync-root source failed and the item is inside the user folder (S7, D11).
     SyncDetectionFailed,
     /// Gone, or the item itself cannot be read.
@@ -603,13 +758,13 @@ pub fn check_item(
     stops: &dyn StopFolders,
 ) -> Result<(), Refusal> {
     let refuse = |p| Err(Refusal::Protected { protection: p });
-    if let Some(p) = &snap.protection {
-        return refuse(p.clone());
+    if let Some(p) = snap.protection.primary() {
+        return refuse(p);
     }
     let Some(c) = CanonPath::new(path) else {
         return refuse(Protection::Self_(Reason::Unresolved));
     };
-    if let Some(p) = ctx.canon_protection(&c) {
+    if let Some(p) = ctx.canon_protections(&c).primary() {
         return refuse(p);
     }
     if ctx.sync_unverified(&c) {
@@ -642,28 +797,45 @@ pub fn check_item(
     check_subtree(ctx, path, snap.below_stop_folder, stops)
 }
 
+/// One folder on the work list: whether rule matching has ended above it (a rule folder or an
+/// install root below the item), and whether a built-in rule folder bounds credential findings
+/// there (D12), which then do not refuse the item.
+struct Pending {
+    dir: PathBuf,
+    no_rules: bool,
+    bounded: bool,
+}
+
 fn check_subtree(
     ctx: &ProtectContext,
     root: &Path,
     below_stop: bool,
     stops: &dyn StopFolders,
 ) -> Result<(), Refusal> {
-    let found = |r: Reason| {
-        Err(Refusal::Protected {
-            protection: Protection::Contains(r),
-        })
+    let refuse = |p: Protections| match p.primary() {
+        Some(protection) => Err(Refusal::Protected { protection }),
+        None => Ok(()),
     };
-    // Each folder carries whether a rule folder below the item stopped the walk above it (no
-    // more rule matching), and whether that was a built-in one, which bounds credential
-    // findings (D12): those do not refuse the item.
-    let mut stack = vec![(root.to_path_buf(), false, false)];
-    while let Some((dir, stopped, bounded)) = stack.pop() {
-        let counts = |r: &Reason| !(bounded && r.stops_at_rule_folder());
+    let found = |r: Reason| refuse(Protection::Contains(r).into());
+    let mut stack = vec![Pending {
+        dir: root.to_path_buf(),
+        no_rules: below_stop,
+        bounded: false,
+    }];
+    while let Some(Pending {
+        dir,
+        no_rules,
+        bounded,
+    }) = stack.pop()
+    {
         let entries = match fs::read_dir(paths::verbatim(&dir)) {
             Ok(entries) => entries,
             Err(_) if dir == root => return Err(Refusal::Missing),
             Err(_) => return found(Reason::Unreadable),
         };
+        // Names are joined as listed (`OsString`), never through a lossy `String`: an unpaired
+        // surrogate would become U+FFFD and open a different folder (2nd audit A1). The lossy
+        // form is used only to match names.
         let mut listed = Vec::new();
         for entry in entries {
             let Ok(entry) = entry else {
@@ -672,48 +844,44 @@ fn check_subtree(
             let Ok(meta) = entry.metadata() else {
                 return found(Reason::Unreadable);
             };
-            listed.push((entry.file_name().to_string_lossy().into_owned(), meta));
+            let kind = attrs::classify(meta.file_attributes(), meta.file_type().is_symlink());
+            let name = entry.file_name();
+            let text = name.to_string_lossy().into_owned();
+            listed.push((name, text, kind, meta.file_attributes()));
         }
         // `when` looks at files only: a folder named `package.json` proves nothing.
         let files: Vec<String> = listed
             .iter()
-            .filter(|(_, m)| {
-                matches!(
-                    attrs::classify(m.file_attributes(), m.file_type().is_symlink()),
-                    EntryKind::File | EntryKind::CloudOnly
-                )
-            })
-            .map(|(n, _)| n.clone())
+            .filter(|(_, _, kind, _)| matches!(kind, EntryKind::File | EntryKind::CloudOnly))
+            .map(|(_, text, _, _)| text.clone())
             .collect();
-        for (name, meta) in &listed {
-            match attrs::classify(meta.file_attributes(), meta.file_type().is_symlink()) {
+        let no_rules_below = no_rules || stops.install_root(&files);
+        for (name, text, kind, attributes) in &listed {
+            match kind {
                 EntryKind::Link => {} // removed as a link, never followed (S1)
                 EntryKind::CloudOnly => return found(Reason::CloudFile),
                 EntryKind::File => {
-                    if let Some(r) = file_protection(name).filter(|r| counts(r)) {
-                        return found(r);
+                    if let Some(r) = file_protection(text) {
+                        if !(bounded && r.stops_at_rule_folder()) {
+                            return found(r);
+                        }
                     }
                 }
                 EntryKind::Dir => {
-                    if attrs::is_cloud_only(meta.file_attributes()) {
+                    if attrs::is_cloud_only(*attributes) {
                         return found(Reason::CloudFile);
                     }
                     let child = dir.join(name);
-                    if let Some(p) = ctx
-                        .path_protection(&child)
-                        .and_then(|p| p.lifted(false))
-                        .filter(|p| counts(p.reason()))
-                    {
-                        return Err(Refusal::Protected { protection: p });
-                    }
-                    let here = (!stopped && !below_stop)
+                    let lifted = ctx.path_protections(&child).lifted(false);
+                    refuse(if bounded { lifted.unbounded() } else { lifted })?;
+                    let here = (!no_rules_below)
                         .then(|| stops.stop(&child, &files))
                         .flatten();
-                    stack.push((
-                        child,
-                        stopped || here.is_some(),
-                        bounded || here == Some(Stop::Bounded),
-                    ));
+                    stack.push(Pending {
+                        dir: child,
+                        no_rules: no_rules_below || here.is_some(),
+                        bounded: bounded || here == Some(Stop::Bounded),
+                    });
                 }
             }
         }
@@ -724,6 +892,16 @@ fn check_subtree(
 #[cfg(test)]
 pub(crate) fn known_folder_for_test(folder: KnownFolder) -> Option<PathBuf> {
     win::known_folder(&folder)
+}
+
+#[cfg(test)]
+pub(crate) fn short_name_for_test(path: &Path) -> Option<PathBuf> {
+    win::short_name(path)
+}
+
+#[cfg(test)]
+pub(crate) fn looks_short_for_test(name: &str) -> bool {
+    looks_short(name)
 }
 
 mod win {
@@ -1085,7 +1263,8 @@ mod tests {
             "sig.asc",
             "release.jks",
             "debug.keystore",
-            "id_rsa",
+            "id_rsa.pub",
+            "id_ed25519.pub",
             "mail.pst",
             "mail.ost",
             "my-wallet.dat",
@@ -1174,17 +1353,82 @@ mod tests {
         }
     }
 
+    fn set(items: &[Protection]) -> Protections {
+        let mut s = Protections::default();
+        for p in items {
+            s.add(p.clone());
+        }
+        s
+    }
+
     #[test]
-    fn protect_merge_prefers_self() {
-        let s = Some(Self_(Reason::CredentialPath));
-        let c = Some(Contains(Reason::VirtualDisk));
-        assert_eq!(Protection::merge(c.clone(), s.clone()), s);
-        assert_eq!(Protection::merge(s.clone(), c.clone()), s);
-        assert_eq!(Protection::merge(None, c.clone()), c);
-        assert_eq!(Protection::merge(c.clone(), None), c);
+    fn protect_sets_ignore_order_and_show_the_strongest() {
+        let items = [
+            Contains(Reason::VirtualDisk),
+            Self_(Reason::CredentialDir { name: ".ssh" }),
+            Self_(Reason::CredentialPath),
+            Contains(Reason::SyncRoot),
+            Self_(Reason::CredentialPath),
+        ];
+        let forward = set(&items);
+        let mut reversed = items.to_vec();
+        reversed.reverse();
+        assert_eq!(forward, set(&reversed));
+        assert_eq!(forward.self_.len(), 2, "deduplicated");
+        assert_eq!(forward.primary(), Some(Self_(Reason::CredentialPath)));
+        assert!(forward.has_self());
+        let only_contains = set(&[Contains(Reason::Unreadable), Contains(Reason::SyncRoot)]);
+        assert_eq!(only_contains.primary(), Some(Contains(Reason::SyncRoot)));
+        assert!(Protections::default().primary().is_none());
+    }
+
+    /// 2nd audit B1, reproduction 1: a folder that is a credential store and also holds a
+    /// virtual disk. At a built-in rule-folder boundary the credential stops, the disk goes on.
+    #[test]
+    fn audit2_b1_boundary_keeps_the_other_reasons() {
+        for items in [
+            [
+                Self_(Reason::CredentialFile { name: ".kdbx" }),
+                Contains(Reason::VirtualDisk),
+            ],
+            [
+                Contains(Reason::VirtualDisk),
+                Self_(Reason::CredentialFile { name: ".kdbx" }),
+            ],
+        ] {
+            let lifted = set(&items).lifted(true);
+            assert_eq!(lifted, Contains(Reason::VirtualDisk).into(), "{items:?}");
+        }
+        // Reproduction 2: `Contains(.ssh)` with `Contains(SyncRoot)`.
+        for items in [
+            [
+                Contains(Reason::CredentialDir { name: ".ssh" }),
+                Contains(Reason::SyncRoot),
+            ],
+            [
+                Contains(Reason::SyncRoot),
+                Contains(Reason::CredentialDir { name: ".ssh" }),
+            ],
+        ] {
+            assert_eq!(
+                set(&items).lifted(true),
+                Contains(Reason::SyncRoot).into(),
+                "{items:?}"
+            );
+        }
+        // Without a boundary everything goes up; links and roots never do.
+        let all = set(&[
+            Self_(Reason::CredentialFile { name: ".kdbx" }),
+            Contains(Reason::VirtualDisk),
+            Self_(Reason::Reparse),
+            Contains(Reason::UserFolderRoot),
+        ]);
         assert_eq!(
-            Protection::merge(c.clone(), Some(Contains(Reason::SyncRoot))),
-            c
+            all.lifted(false),
+            set(&[
+                Contains(Reason::CredentialFile { name: ".kdbx" }),
+                Contains(Reason::VirtualDisk)
+            ])
         );
     }
 
@@ -1207,7 +1451,7 @@ mod tests {
     fn dir_snap() -> ItemSnapshot {
         ItemSnapshot {
             is_dir: true,
-            protection: None,
+            protection: Protections::default(),
             below_stop_folder: false,
         }
     }
@@ -1246,7 +1490,7 @@ mod tests {
         let file = item.join("pkg").join("index.js");
         let snap = ItemSnapshot {
             is_dir: false,
-            protection: None,
+            protection: Protections::default(),
             below_stop_folder: false,
         };
         assert_eq!(check(&ctx(), &file, &snap), Ok(()));
@@ -1257,7 +1501,7 @@ mod tests {
         let fx = testzone::fixture();
         let snap = ItemSnapshot {
             is_dir: true,
-            protection: Some(Contains(Reason::SyncRoot)),
+            protection: Contains(Reason::SyncRoot).into(),
             below_stop_folder: false,
         };
         assert_eq!(
@@ -1292,7 +1536,7 @@ mod tests {
         fs::create_dir_all(&now_dir).unwrap();
         let snap = ItemSnapshot {
             is_dir: false,
-            protection: None,
+            protection: Protections::default(),
             below_stop_folder: false,
         };
         assert_eq!(check(&ctx(), &now_dir, &snap), Err(Refusal::Changed));
@@ -1534,7 +1778,7 @@ mod tests {
         write_file(&disk, 1024);
         let snap = ItemSnapshot {
             is_dir: false,
-            protection: None,
+            protection: Protections::default(),
             below_stop_folder: false,
         };
         assert_eq!(

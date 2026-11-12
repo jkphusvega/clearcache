@@ -95,9 +95,15 @@ pub fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// `GetWindowsDirectoryW`: where Windows is, whatever `%SystemRoot%` says in this process.
+/// `GetSystemWindowsDirectoryW`: where Windows is, whatever `%SystemRoot%` says in this process.
 pub fn windows_dir() -> Option<PathBuf> {
     win::windows_dir()
+}
+
+/// Where an existing path really is once links (junctions, symlinks) are followed
+/// (`GetFinalPathNameByHandleW`), in plain form. `None` if it does not exist or cannot be opened.
+pub fn final_path(path: &Path) -> Option<PathBuf> {
+    win::final_path(path)
 }
 
 /// The path Windows would use for `path`: `.` and `..` collapsed (`GetFullPathNameW`), and a
@@ -129,12 +135,12 @@ pub fn volume_guid(mount: &str) -> Option<String> {
 mod win {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use windows::Win32::Foundation::LPARAM;
     use windows::Win32::Globalization::{
         CompareStringOrdinal, LCMapStringEx, CSTR_EQUAL, LCMAP_UPPERCASE, LOCALE_NAME_INVARIANT,
     };
-    use windows::Win32::System::SystemInformation::GetWindowsDirectoryW;
+    use windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
 
     pub fn compare_ordinal_ci(a: &str, b: &str) -> bool {
         let a: Vec<u16> = a.encode_utf16().collect();
@@ -203,10 +209,51 @@ mod win {
         Some(String::from_utf16_lossy(&buf[..end]))
     }
 
+    /// Where an existing file or folder really is, links resolved (`\\?\` stripped).
+    pub fn final_path(path: &Path) -> Option<PathBuf> {
+        use windows::core::HSTRING;
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::Storage::FileSystem::{
+            CreateFileW, GetFinalPathNameByHandleW, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            OPEN_EXISTING, VOLUME_NAME_DOS,
+        };
+        let wide = HSTRING::from(super::verbatim(path).as_os_str());
+        // Folders only need BACKUP_SEMANTICS; no data is read, so cloud files are not recalled.
+        let h = unsafe {
+            CreateFileW(
+                &wide,
+                FILE_READ_ATTRIBUTES.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                None,
+            )
+        }
+        .ok()?;
+        let mut buf = vec![0u16; 1024];
+        let n = unsafe { GetFinalPathNameByHandleW(h, &mut buf, VOLUME_NAME_DOS) } as usize;
+        unsafe {
+            let _ = CloseHandle(h);
+        }
+        if n == 0 || n >= buf.len() {
+            return None;
+        }
+        let s = String::from_utf16_lossy(&buf[..n]);
+        let s = match s.strip_prefix(r"\\?\UNC\") {
+            Some(rest) => format!(r"\\{rest}"),
+            None => s.strip_prefix(r"\\?\").unwrap_or(&s).to_string(),
+        };
+        Some(PathBuf::from(s))
+    }
+
+    /// `GetSystemWindowsDirectoryW`: the shared Windows folder even under Terminal Services,
+    /// where `GetWindowsDirectoryW` may return a per-user one (2nd audit D2).
     pub fn windows_dir() -> Option<PathBuf> {
         let mut buf = vec![0u16; 260];
         loop {
-            let n = unsafe { GetWindowsDirectoryW(Some(&mut buf)) } as usize;
+            let n = unsafe { GetSystemWindowsDirectoryW(Some(&mut buf)) } as usize;
             if n == 0 {
                 return None;
             }
@@ -301,7 +348,7 @@ mod tests {
     /// Audit 13: the Windows folder comes from the OS, not from a variable anyone can set.
     #[test]
     fn audit_13_windows_dir_comes_from_the_os() {
-        let w = windows_dir().expect("GetWindowsDirectoryW");
+        let w = windows_dir().expect("GetSystemWindowsDirectoryW");
         assert!(w.join("System32").is_dir(), "{w:?}");
     }
 }

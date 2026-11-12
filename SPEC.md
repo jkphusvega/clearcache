@@ -1,4 +1,4 @@
-# AI 디스크 정리 도구 — 바이브코딩 스펙 (v1.9)
+# AI 디스크 정리 도구 — 바이브코딩 스펙 (v1.10)
 
 Sep 25, 2026 · @종경 · 개정 이력은 문서 끝에 있다.
 
@@ -142,7 +142,8 @@ flowchart LR
 
 - 내장 규칙은 앱에 들어 있는 `rules.json`(버전 번호 포함)이다. **실행할 때마다** 버전을 비교해 SQLite의 내장 규칙을 갱신한다. 사용자가 추가한 규칙은 별도 출처(`source=user`)로 두고 건드리지 않는다.
 - 규칙 = 경로 패턴 + 이름 + 등급 + 설명 + 재생성 방법 + 대상 방식(`folder` 또는 `contents_older_than`).
-- **앱 설치 위치 제외 목록**: `%LOCALAPPDATA%\Packages`, `%LOCALAPPDATA%\Programs`, `%APPDATA%\npm`, `%ProgramFiles%`, `%ProgramFiles(x86)%`(어느 드라이브의 `Program Files`든), 편집기 확장 폴더(`%USERPROFILE%\.vscode`, `.vscode-insiders`, `.vscode-oss`, `.cursor`, `.windsurf`), 전역 패키지 관리자(`%LOCALAPPDATA%\pnpm`, `%LOCALAPPDATA%\Yarn`, `%USERPROFILE%\.bun`), Scoop 앱(`%USERPROFILE%\scoop\apps`, `%SCOOP%\apps`), Squirrel로 설치된 앱의 버전 폴더(`%LOCALAPPDATA%\<앱>\app-<버전>`, Discord·Slack 등), 그리고 위치와 관계없이 Electron 앱 번들(`resources\app`, `resources\app.asar.unpacked`).
+- **앱 설치 위치 제외 목록**: `%LOCALAPPDATA%\Packages`, `%LOCALAPPDATA%\Programs`, `%APPDATA%\npm`, `%ProgramFiles%`, `%ProgramFiles(x86)%`(어느 드라이브의 `Program Files`든), 편집기 확장 폴더(`%USERPROFILE%\.vscode`, `.vscode-insiders`, `.vscode-oss`, `.cursor`, `.windsurf`), 전역 패키지 관리자(`%LOCALAPPDATA%\pnpm`, `%LOCALAPPDATA%\Yarn`, `%USERPROFILE%\.bun`), Scoop 앱(`%USERPROFILE%\scoop\apps`, `%SCOOP%\apps`), Squirrel로 설치된 앱의 버전 폴더(`%LOCALAPPDATA%\<앱>\app-<버전>`, Discord·Slack 등), Node 버전 관리자(`%APPDATA%\nvm`, `%APPDATA%\fnm`, `%LOCALAPPDATA%\fnm_multishells`, `%LOCALAPPDATA%\Volta`, 그리고 설정돼 있으면 `%NVM_HOME%`, `%NVM_SYMLINK%`, `%FNM_DIR%`, `%VOLTA_HOME%`), 위치와 관계없이 Electron 앱 번들(`resources\app`, `resources\app.asar.unpacked`), 그리고 `node.exe`가 든 폴더(Node 설치 폴더)와 그 아래 전부.
+  - 제외 목록을 만들 때 꼭 있어야 할 환경 변수(`LOCALAPPDATA`, `APPDATA`, `USERPROFILE`, `ProgramFiles`, `ProgramFiles(x86)`)를 하나라도 풀지 못하면, 목록이 불완전하므로 이름 패턴 규칙은 아무 폴더에도 걸리지 않는다(막는 쪽: 그 폴더들은 "모름"). 도구를 설치했을 때만 있는 변수(`SCOOP`, `NVM_HOME` 등)는 없어도 된다. 규칙의 `not_inside`를 풀지 못하면 그 규칙을 끈다.
   - 어느 깊이든 맞는 이름 패턴(`**\node_modules`, `**\.next`, `**\target` 등)을 쓰는 **모든 규칙**(내장·사용자 규칙 모두)은 이 위치 아래에서 걸리지 않는다. 규칙이 끌 수 없다.
   - 이 아래의 같은 이름 폴더는 개발 산출물이 아니라 설치된 앱의 일부일 수 있기 때문이다(Electron 앱의 `resources\app\node_modules`, 전역 npm 패키지 등).
   - 경로를 직접 지정한 규칙(`%LOCALAPPDATA%\npm-cache` 등)에는 적용하지 않는다.
@@ -243,15 +244,16 @@ API 키는 SQLite에 저장하지 않는다.
 
 - **ClearCache는 관리자 권한으로 실행하지 않는다.** 관리자로 실행되면 다른 사용자의 프로필과 시스템 파일까지 열 수 있어 안전 규칙의 실수 한 번이 훨씬 크게 번진다. 설치 파일은 관리자 권한을 요구하지 않고(`asInvoker`), 관리자 토큰으로 실행되면 시작할 때 안내하고 격리·삭제를 막는다(M4).
 - **경로를 다루는 방식**:
-  - 디렉터리 읽기와 파일 열기는 모두 `\\?\` 경로로 한다. Win32는 일반 경로의 끝 점·공백을 지우고(`evil.`을 읽으면 `evil`이 열림) MAX_PATH에서 멈추기 때문이다.
-  - 이름 비교는 NTFS와 같은 규칙(`CompareStringOrdinal`, 대소문자 무시)으로 한다. `to_lowercase`는 NTFS가 다르게 보는 이름(ß와 ẞ, 켈빈 기호와 k 등)을 같다고 본다.
-  - Windows 폴더 위치는 `%SystemRoot%`가 아니라 `GetWindowsDirectoryW`로 얻는다.
-  - 8.3 짧은 이름 모양(`PROGRA~1`)인 구성요소만 긴 이름으로 바꾼다. 바꿀 수 없으면 보호 쪽으로 판정한다. `$WINDOWS.~BT`처럼 `~`가 든 실제 이름은 그대로 비교한다.
+  - 디렉터리 읽기와 파일 열기는 모두 `\\?\` 경로로 한다. Win32는 일반 경로의 끝 점·공백을 지우고(`evil.`을 읽으면 `evil`이 열림) MAX_PATH에서 멈추기 때문이다. `\\?\`는 읽는 호출에만 붙이고, 스캔 결과에 저장하는 경로와 화면에 보이는 경로는 일반 형태(`C:\...`)다.
+  - 목록에서 받은 이름은 바꾸지 않고 그대로(`OsString`) 이어 붙인다. 문자열로 바꾸면 짝 없는 서로게이트가 든 이름이 U+FFFD로 바뀌어 다른 폴더가 열린다. 문자열은 이름을 비교할 때만 쓴다.
+  - 이름 비교는 NTFS와 같은 규칙(`CompareStringOrdinal`, 대소문자 무시)으로 한다. `to_lowercase`는 NTFS가 다르게 보는 이름(ß와 ẞ, 켈빈 기호와 k 등)을 같다고 보고, NTFS가 같게 보는 이름(`ΝΙΚΟΣ`와 `νικοσ`)을 다르다고 본다.
+  - Windows 폴더 위치는 `%SystemRoot%`가 아니라 `GetSystemWindowsDirectoryW`로 얻는다(터미널 서비스에서도 공용 Windows 폴더).
+  - 이름의 기본 부분이 `~숫자`로 끝나는 구성요소(`PROGRA~1`, `인천대~1`)는 길이와 관계없이 긴 이름으로 바꿔 본다. 바꿀 수 없으면 보호 쪽으로 판정한다. `$WINDOWS.~BT`, `~cache`처럼 그 모양이 아닌 `~` 이름은 그대로 비교한다.
   - Tauri 커맨드는 경로 문자열을 받지 않는다(스캔 결과 id와 세대만 받음, "아키텍처 경계").
 
 - **절대 선택·격리·삭제 대상이 될 수 없는 경로**: `C:\Windows`, `C:\Program Files`, `C:\Program Files (x86)`, `C:\ProgramData`, `System Volume Information`, `$Recycle.Bin`, `pagefile.sys`, `hiberfil.sys`, `swapfile.sys`, 격리함 폴더 자체. 목록에는 선택할 수 없는 "시스템 (보호됨)"으로 표시만 한다. 단, 격리함 폴더는 목록에도 올리지 않는다.
 - **드라이브 전체 스캔 시 시스템 폴더 보호** (M3에서 구현, M4 격리 전에 반드시 있어야 함):
-  - 대상: 스캔한 드라이브 루트의 `Windows`, `Program Files`, `Program Files (x86)`, `ProgramData`, `System Volume Information`, `$Recycle.Bin`, `Recovery`, `$WinREAgent`, `PerfLogs`, `Boot`, `EFI`, `Config.Msi`, `$WINDOWS.~BT`, `$WINDOWS.~WS`, `Windows.old`와 `Windows.old.*`(`Windows.old.000` 등), 그리고 Windows 폴더(`GetWindowsDirectoryW`, 드라이브 문자가 C:가 아닐 때 포함).
+  - 대상: 스캔한 드라이브 루트의 `Windows`, `Program Files`, `Program Files (x86)`, `ProgramData`, `System Volume Information`, `$Recycle.Bin`, `Recovery`, `$WinREAgent`, `PerfLogs`, `Boot`, `EFI`, `Config.Msi`, `$WINDOWS.~BT`, `$WINDOWS.~WS`, `Windows.old`와 `Windows.old.*`(`Windows.old.000` 등), 그리고 Windows 폴더(`GetSystemWindowsDirectoryW`, 드라이브 문자가 C:가 아닐 때 포함).
   - `Windows.old`와 `Windows.old.*`는 "공식 도구" 칸에서 "설정 > 시스템 > 저장소 > 임시 파일 > 이전 Windows 설치"를 안내한다.
   - 이 폴더와 그 하위 폴더는 어떤 규칙이나 AI 판정으로도 선택·격리·삭제 대상이 될 수 없다. 화면에서는 선택할 수 없는 "시스템 (보호됨)"으로 표시한다.
   - 보호 여부는 Rust에서 판정하고, 격리·삭제 직전에 다시 검사한다. 프론트엔드의 표시와 관계없이 막는다.
@@ -268,10 +270,12 @@ API 키는 SQLite에 저장하지 않는다.
   - **git 저장소**: `.git`이 들어 있는 폴더(저장소 루트)와 그 상위 폴더 전부. 저장소 안의 하위 폴더는 규칙에 걸리면 규칙을 따른다 (그래서 저장소 안의 `node_modules`는 "안전"이 될 수 있다).
     - **규칙에 걸린 폴더 안에서 발견된 `.git`은 저장소 루트로 보지 않고 상위로 전파하지 않는다.** 예: git 의존성으로 받은 `node_modules\<패키지>\.git`, 캐시 안의 저장소 사본. 전파하면 그 `node_modules`와 프로젝트 전체가 "사용자 데이터"로 고정된다.
   - 다음 확장자 파일이 1GB 이상 들어 있는 폴더: `.pst`, `.ost`. 가상 디스크(`.vhdx`, `.vhd`, `.avhdx`, `.vhds`, `.vmdk`, `.vdi`, `.qcow2`)는 크기와 관계없이 S11로 막힌다.
-  - **자격 증명 파일**이 크기와 관계없이 하나라도 들어 있는 폴더: 확장자 `.kdbx`, `.kdb`, `.psafe3`, `.ppk`, `.pfx`, `.p12`, `.1pux`(1Password 내보내기), `.agilekeychain`, 파일 이름 `wallet.dat`, `default_wallet`(Electrum), `.git-credentials`, `key4.db`(Firefox·Thunderbird 키 DB), 그리고 폴더 이름 `*.opvault`·`*.agilekeychain`(그 폴더 자체). 이름은 Win32가 여는 이름으로 맞춘다(끝의 점·공백 무시: `db.kdbx.`). 백업 접미사(`.bak`, `.old`, `.orig`, `.backup`, `.tmp`, 끝의 `~`) 하나를 벗긴 이름도 맞춘다(`passwords.kdbx.bak`, `db.kdbx~`). 오탐이 많은 `.pem`, `.key`, `.crt`, `.cer`, `.gpg`, `.asc`, `.jks`, `.keystore`, `logins.json`은 넣지 않는다(개인 키 경로 `.ssh`, `.gnupg`와 Firefox 프로필은 위 경로 규칙이 막는다).
+  - **자격 증명 파일**이 크기와 관계없이 하나라도 들어 있는 폴더: 확장자 `.kdbx`, `.kdb`, `.psafe3`, `.ppk`, `.pfx`, `.p12`, `.1pux`(1Password 내보내기), `.agilekeychain`, 파일 이름 `wallet.dat`, `default_wallet`(Electrum), `.git-credentials`, `key4.db`(Firefox·Thunderbird 키 DB), `.ssh` 밖에 복사된 SSH 개인 키 `id_rsa`·`id_ed25519`·`id_ecdsa`, 그리고 폴더 이름 `*.opvault`·`*.agilekeychain`(그 폴더 자체). 이름은 Win32가 여는 이름으로 맞춘다(끝의 점·공백 무시: `db.kdbx.`). 백업 접미사는 여러 겹을 반복해서 벗긴 이름도 맞춘다: `.bak`·`.old`·`.orig`·`.backup`·`.tmp`·`.save`(뒤에 숫자가 붙어도: `.bak2`), 숫자·날짜만 있는 마디(`.1`, `.2026-01-01`), 끝의 `~`(예: `db.kdbx.old.bak`, `db.kdbx.2026-01-01.bak`). 오탐이 많은 `.pem`, `.key`, `.crt`, `.cer`, `.gpg`, `.asc`, `.jks`, `.keystore`, `logins.json`, 공개 키 `*.pub`, 그리고 프로젝트마다 있는 `.env`·`.npmrc`는 넣지 않는다(개인 키 경로 `.ssh`, `.gnupg`와 Firefox 프로필은 위 경로 규칙이 막는다).
   - **선택 가능 여부**는 둘로 나뉜다.
     - **자격 증명 보호 경로**: 자격 증명(`.ssh`, `.aws`, `.gnupg`, `.azure`, `.kube`), 브라우저 프로필, `%LOCALAPPDATA%\Packages`, Windows 자격 증명·키 저장소, 자격 증명 파일을 품은 폴더. 처리 방식은 `explain_only`이고 **선택할 수 없다.** 자격 증명 파일과 이름으로 찾은 자격 증명 폴더(`.ssh` 등)는 상위로 전파하되, **내장** "안전"·"아마 안전" 규칙에 걸린 폴더(예: `node_modules`) 안에서 나오면 그 폴더까지만 막는다(라이브러리의 테스트 파일 때문에 프로젝트 전체가 막히지 않게). 사용자 규칙은 이 경계를 만들지 않는다(사용자 규칙 하나로 자격 증명이 가려지지 않게). 위치로 정한 경로(브라우저 프로필, `Packages`, Windows 자격 증명·키 저장소)는 규칙 폴더를 넘어 끝까지 전파한다. 그 하위 폴더도 규칙에 걸리든 아니든 선택할 수 없다(`Packages` 안의 `LocalCache`·`TempState` 포함). 이 경로를 품은 상위 폴더(`%LOCALAPPDATA%\Google`, `AppData\Local` 등)도 S2에 따라 선택할 수 없다.
     - 그 밖의 고정 항목(Documents 등, git 저장소 루트, 큰 `.pst`·`.ost` 폴더): 경고 모달을 거쳐 선택할 수 있다. OneDrive는 동기화 루트라서 S7에 따라 따로 막힌다.
+  - **한 폴더의 보호 사유는 하나가 아니라 집합이다.** 한 폴더가 여러 이유로 보호될 수 있다(동기화 루트를 품은 `.ssh`, 가상 디스크 옆의 금고 등). 모든 검사를 돌려 사유를 다 모으고, 화면에는 가장 강한 사유 하나를 보여준다(정해진 순위: 시스템 > 격리함 > 동기화 > 클라우드 > 자격 증명 경로 > 가상 디스크 > 자격 증명 파일 > 자격 증명 폴더 > 링크 > 확인 불가 > 읽기 실패 > 루트). 규칙 폴더 경계에서는 "멈추는" 사유(자격 증명 파일·이름으로 찾은 자격 증명 폴더)만 걷어내고 나머지는 그대로 위로 올린다. 그래서 검사 순서가 결과를 바꾸지 않는다.
+  - **감지 한계(기록)**: 사용자가 직접 옮긴 브라우저 프로필(정션으로 옮긴 `User Data`, `--user-data-dir`로 지정한 폴더, 백업해 둔 프로필 사본)은 위치 규칙에 걸리지 않는다. Chromium 프로필에는 Firefox의 `key4.db` 같은 표식 파일이 없어 이름으로도 찾지 못한다. 동기화 루트는 등록 경로가 링크를 거쳐도 최종 경로(`GetFinalPathNameByHandleW`)를 함께 보호하지만, 브라우저 프로필 위치는 등록된 값이 없어 같은 방법을 쓸 수 없다.
 - 격리 시 rename이 실패하면 "사용 중"으로 표시하고 옮기지 않는다.
 - 앱 안에서 영구 삭제는 격리함 화면의 "완전 삭제" 버튼 하나뿐이다. 확인 모달에 경로와 크기를 보여준다.
 - **파일 손실 방지 규칙** (설계 문서 `docs/designs/clearcache-reclaim-core.md`와 그 리뷰에서 추가, 각 항목은 M4 완료 조건의 테스트 S1~S12와 연결):
@@ -281,7 +285,7 @@ API 키는 SQLite에 저장하지 않는다.
   - **S4 [R2-12]** 격리함은 사용자별로 분리한다(`C:\ClearCache_Quarantine\<사용자 SID>\...`). 만들 때 해당 사용자와 SYSTEM만 접근하도록 ACL을 건다. 각 사용자의 앱은 자기 항목만 보고 지운다.
   - **S5 [R2-13]** 완전 삭제가 중간에 실패하면 기록을 지우지 않는다. 상태는 "일부 삭제됨"으로 바꾸고 남은 크기를 기록하며, 재시도를 제공한다. 영수증에는 실측 확보량과 실패 개수만 적는다.
   - **S6 [R2-1]** 격리 rename이 실패하면 아무것도 옮기지 않고 SQLite 상태도 바꾸지 않는다(부분 이동 없음). 알려진 앱의 캐시는 해당 프로세스가 실행 중이면 격리 전에 종료를 안내한다.
-  - **S7** 등록된 모든 클라우드 동기화 루트(OneDrive 여러 계정, SyncRootManager에 등록된 제공자) 안에서는 격리하지 않는다. 감지 소스가 전부 실패하면 사용자 폴더 안 항목은 선택 단계부터 막고, 격리 직전에 감지를 다시 해서 여전히 전부 실패면 거부한다. 감지는 막는 쪽으로 판정한다(fail closed): 환경 변수(`%OneDrive%` 등)가 없다는 것은 "동기화 폴더 없음"의 근거가 아니므로 성공으로 치지 않는다. 소스가 돌려준 루트는 Windows가 해석하는 대로 바꿔 비교한다(`C:\od\.\root` → `C:\od\root`, `\\?\Volume{…}\od` → 그 볼륨의 드라이브 문자). 해석할 수 없는 값(펼치지 못한 `%변수%`, 상대 경로, 없는 8.3 경로 등)은 조용히 빼지 않고 그 소스를 실패로 기록한다. `USERPROFILE`을 알 수 없거나 쓸 수 없는 형태(`..` 포함 등)이면 사용자 폴더의 안팎을 가릴 수 없으므로 모든 항목을 막는다.
+  - **S7** 등록된 모든 클라우드 동기화 루트(OneDrive 여러 계정, SyncRootManager에 등록된 제공자) 안에서는 격리하지 않는다. 감지 소스가 전부 실패하면 사용자 폴더 안 항목은 선택 단계부터 막고, 격리 직전에 감지를 다시 해서 여전히 전부 실패면 거부한다. 감지는 막는 쪽으로 판정한다(fail closed): 환경 변수(`%OneDrive%` 등)가 없다는 것은 "동기화 폴더 없음"의 근거가 아니므로 성공으로 치지 않는다. 소스가 돌려준 루트는 Windows가 해석하는 대로 바꿔(`C:\od\.\root` → `C:\od\root`, `\\?\Volume{…}\od` → 그 볼륨의 드라이브 문자, 8.3 별칭 → 긴 이름) 그 형태로 저장하고 비교한다. 루트가 링크를 거쳐 등록돼 있으면 링크가 가리키는 최종 경로도 함께 보호한다(스캔은 링크를 따라가지 않고 실제 위치만 보기 때문). 해석할 수 없는 값(펼치지 못한 `%변수%`, 상대 경로, 없는 8.3 경로 등)은 조용히 빼지 않고 그 소스를 실패로 기록한다. `USERPROFILE`을 알 수 없거나 쓸 수 없는 형태(`..` 포함 등)이면 사용자 폴더의 안팎을 가릴 수 없으므로 모든 항목을 막는다. 선택 판단과 확보량 계산이 같은 정규화된 사용자 폴더로 비교하고, 감지가 전부 실패하면 사용자 폴더 안의 계산도 하지 않는다.
   - **S8** 클라우드 전용 속성(`RECALL_ON_DATA_ACCESS`, `RECALL_ON_OPEN`, `OFFLINE`)인 파일은 스캔·크기 계산·삭제 어디서든 **열지 않는다.**
   - **S9** 리파스 포인트 폴더 자체는 선택할 수 없다.
   - **S10** 격리는 원본과 대상의 볼륨 번호가 같을 때만 한다. 실패하면 복사로 대체하지 않는다(`MoveFileExW`에 복사 허용 플래그 없음).
@@ -356,6 +360,17 @@ M4까지만 해도 AI 없이 쓸 수 있는 정리 도구가 된다. AI는 M5에
   - 격리함 화면에 드라이브별 용량을 보여줘야 한다.
 
 ## 개정 이력
+
+**v1.10 (2026-11-12)**: 2차 보안 감사(새 구멍 9건, 불완전한 수정 2건, 참고 4건)를 반영했다.
+
+- 한 폴더의 보호 사유를 집합으로 바꿨다. 규칙 폴더 경계는 멈추는 사유만 걷어내고, 검사 순서와 관계없이 같은 결과가 나온다(B1·A2).
+- `~숫자`로 끝나는 이름은 길이와 관계없이 8.3 별칭으로 보고 펼친다(한글 별칭 `인천대~1`, A3).
+- `\\?\`는 읽는 호출에만 쓰고 저장·화면 경로는 일반 형태(D1). 목록의 이름은 바꾸지 않고 이어 붙인다(A1).
+- Node 버전 관리자(nvm·fnm·Volta)와 `node.exe`가 든 Node 설치 폴더를 앱 설치 위치 제외에 넣었다(B3). 제외 목록과 `not_inside`의 환경 변수를 풀지 못하면 막는 쪽으로 판정한다(B5).
+- 동기화 루트는 펼친 형태로 저장하고 링크 너머의 최종 경로도 보호한다. 사용자 폴더 비교는 정규화된 형태로 한다(C1·C2·A4).
+- Windows 폴더는 `GetSystemWindowsDirectoryW`로 얻는다(D2).
+- 백업 접미사를 여러 겹 벗기고(숫자·날짜 포함), `.ssh` 밖의 `id_rsa`·`id_ed25519`·`id_ecdsa`를 자격 증명 파일에 넣었다. `.env`·`.npmrc`는 넣지 않는다(B4).
+- 사용자가 직접 옮긴 브라우저 프로필은 감지 한계로 기록했다(A4).
 
 **v1.9 (2026-11-12)**: 보안 감사(13건) 결과를 반영했다.
 

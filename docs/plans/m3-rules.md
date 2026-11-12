@@ -1,6 +1,6 @@
 # M3 계획 (초안): 규칙 DB + 등급 판정 + 시스템 폴더 보호
 
-> **eng 리뷰 완료(2026-10-30). M3a T0·T1(2026-10-30)·T2·T3(2026-11-12) 완료, 보안 감사 13건 반영(2026-11-12, "보안 감사 반영"), 다음은 T4(순회).** 결정 D1~D24와 Outside Voice 정정은 아래 "Eng 리뷰 (2026-10-30)"에 있고, 작업 순서는 "Implementation Tasks"(M3a T0~T8, M3b T9~T14)를 따른다. 미결 U2~U10은 eng 리뷰에서 정했다(U1, U11, U12는 남음).
+> **eng 리뷰 완료(2026-10-30). M3a T0·T1(2026-10-30)·T2·T3(2026-11-12) 완료, 보안 감사 13건과 2차 감사 반영(2026-11-12, "보안 감사 반영"·"2차 보안 감사 반영"), 다음은 T4(순회).** 결정 D1~D24와 Outside Voice 정정은 아래 "Eng 리뷰 (2026-10-30)"에 있고, 작업 순서는 "Implementation Tasks"(M3a T0~T8, M3b T9~T14)를 따른다. 미결 U2~U10은 eng 리뷰에서 정했다(U1, U11, U12는 남음).
 
 > **현재 상태 (2026-10-24): 초안, 범위 질문 Q1~Q5 결정 완료.** 승인 전에 `/plan-design-review`와 `/plan-eng-review`를 거친다. 구현은 시작하지 않았다.
 > - Q1~Q5는 사용자가 결정했다(아래 "결정됨"). 사용자 검토(2026-10-24)의 1~3번은 반영했다(자격 증명 보호 경로의 S2 전파, 모든 `**\` 규칙에 공통 적용하는 앱 설치 위치 제외 목록, 규칙 안 `.git` 비전파). SPEC v1.6에도 반영했다. 4~10번은 미결 U3~U9로 eng 리뷰에서 다룬다.
@@ -45,6 +45,11 @@ SPEC "개발 단계" M3 행을 그대로 따르고, 이 계획의 범위에서 �
     - **관리자 권한으로 실행하지 않음**: 매니페스트는 `asInvoker`. 시작할 때 토큰이 관리자(`TokenElevation`)면 안내 줄을 띄우고 격리·완전 삭제·복원 커맨드를 거부한다. SPEC 안전 규칙에도 적었다.
     - **커맨드는 경로 문자열을 받지 않음(감사 12번)**: 격리·복원·완전 삭제 커맨드는 스캔 결과 id·격리함 항목 id와 세대만 받는다. 경로는 Rust 세션이 가진 값만 쓴다. 커맨드 인자 타입에 `String` 경로가 없는지 테스트(커맨드 시그니처 표)로 확인한다.
     - **S12 복원 시 `~`가 든 원래 이름**: 8.3 모양 구성요소(`PROGRA~1`)는 원래 위치가 사라지면 긴 이름으로 바꿀 수 없어 `Unresolved`(거부)가 된다. 격리할 때 원래 경로를 `CanonPath`(긴 이름)로 바꿔 `quarantine` 테이블에 기록하고, 복원 검사는 그 기록으로 한다. `$WINDOWS.~BT`처럼 8.3 모양이 아닌 `~` 이름은 그대로 비교한다(M3에서 `looks_short`로 구현).
+  - **M4 전 선행 작업: 등록하지 않는 동기화 도구 조사(2차 감사 B2, 사용자 2026-11-12)**. 지금 감지 소스는 SyncRootManager, OneDrive 계정, 환경 변수뿐이다. 여기에 등록하지 않는 도구의 폴더는 "모름"으로 선택할 수 있고, 격리하면 클라우드에서도 지워질 수 있다. 격리를 만들기 전에 조사한다.
+    - 대상: 네이버 MYBOX, Google Drive(미러 모드), Dropbox(옛 버전 포함), Synology Drive, Syncthing, MEGA.
+    - 이 PC에서 확인할 수 있는 것은 실제로 확인한다(설치 여부, SyncRootManager 등록 여부, 설정 파일 위치).
+    - 제품마다 감지 방안을 정리한다: 표식 파일(예: Dropbox `.dropbox`, Syncthing `.stfolder`, Synology `.SynologyWorkingDirectory`, 각 제품의 설정 파일에 적힌 동기화 폴더 목록), 기본 경로, 레지스트리 키. 찾은 방법은 `SyncRootSource` 구현으로 붙이고, 표식 파일은 순회가 목록에서 보고 `SyncRoot`로 올린다.
+    - 판정 원칙은 지금과 같다: 찾은 폴더는 동기화 루트(S7)이고, 감지 방법이 실패하면 그 소스의 실패로 기록한다.
 - M5: AI 판정(판정 우선순위 3), `verdicts` 캐시. **SQLite 규칙 DB**(eng 리뷰 D1에서 M3에서 옮김): `rusqlite`(bundled), `%LOCALAPPDATA%\ClearCache\clearcache.db`, `rules` 테이블과 스키마 버전 테이블, 실행할 때마다 내장 `rules.json` 버전과 DB의 `builtin_version`을 비교해 `source=builtin` 행을 통째로 바꾸고 `source=user` 행은 건드리지 않는다. DB를 `RuleSource`의 두 번째 구현으로 붙인다(판정 코드는 그대로).
   - **DB 재생성(디자인 리뷰 2B에서 옮긴 문구, 사용자 2026-10-24)**: `clearcache.db`가 깨졌거나 열리지 않을 때 내장 규칙으로 DB를 자동으로 다시 만든다. 화면에는 "규칙 DB를 다시 만들었습니다" 안내만 띄우고, 재설치는 안내하지 않는다. 이 안내 줄은 M2의 동기화 감지 경고와 같은 자리·모양(표 위, 주황 테두리 줄)을 쓴다. 사용자 규칙이 생기는 M6에서는 다시 만들 때 사용자 규칙을 어떻게 지킬지 그때 정한다.
   - 테스트(M3에서 옮김): 버전이 올라가면 내장 규칙이 바뀌고 사용자 규칙은 남는다. 같은 버전이면 아무것도 바꾸지 않는다. 깨진 DB 파일(무작위 바이트, 빈 파일, 스키마 버전 불일치)을 주면 내장 규칙으로 다시 만들고 "DB 다시 만듦" 플래그가 선다. 다시 만든 뒤 판정 결과가 내장 규칙만 쓸 때와 같다. 테스트 DB는 픽스처 폴더에 만든다.
@@ -568,12 +573,36 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
 | 10(낮음) | 디스크의 `ΝΙΚΟΣ`를 NTFS는 `νικοσ`로 여는데 `to_lowercase`는 끝 시그마를 `ς`로 바꿔 불일치 | 이름 비교를 `CompareStringOrdinal`(대소문자 무시)로, 해시 키는 `LCMapStringEx` 불변 대문자. `CanonPath`는 대소문자를 보존하고 비교만 바꿈. M2 `paths`·`policy`도 같이 | `audit_10_greek_final_sigma_matches_like_ntfs`(p6, 디스크에서 확인), `audit_10_lookalike_names_stay_distinct`(보고서의 "막혀 있음": ſ·ı·켈빈), `paths::tests::audit_10_names_compare_like_ntfs`(반대 방향: ß/ẞ, 켈빈·옴 기호, ǅ/ǆ는 `to_lowercase`로 같지만 NTFS로 다름), `audit_10_protection_does_not_merge_distinct_names` |
 | 11(낮음) | Hugging Face 규칙이 로그인 `token`을 품음 | 규칙을 `.cache\huggingface\hub`로 | `audit_11_hugging_face_token_is_not_in_the_rule` |
 | 12(현재 도달 불가) | subst(`X:\System32`)·`\\localhost\C$\…` 별칭 경로가 보호되지 않음 | 지금은 `targets.rs`가 subst·네트워크 드라이브를 빼고 UI가 id만 보냄. M4 요구사항(커맨드는 경로를 받지 않음) | 기존 `targets_drop_unreadable_volume_and_subst` |
-| 13(낮음) | `SystemRoot`가 없으면 `D:\WINNT` 같은 설치 위치가 보호되지 않음. 다른 관리자로 승격 실행하면 개인 폴더·OneDrive가 그 관리자 것으로 잡힘 | Windows 폴더를 `GetWindowsDirectoryW`로(`ProtectContext::from_system`, `ScanConfig::for_target`). 승격 실행은 M4 요구사항(관리자 권한으로 실행하지 않음) | `paths::tests::audit_13_windows_dir_comes_from_the_os`, `protect::tests::audit_13_system_root_ignores_the_environment`, `scan::tests::audit_13_scan_config_system_root_from_the_os` |
+| 13(낮음) | `SystemRoot`가 없으면 `D:\WINNT` 같은 설치 위치가 보호되지 않음. 다른 관리자로 승격 실행하면 개인 폴더·OneDrive가 그 관리자 것으로 잡힘 | Windows 폴더를 `GetWindowsDirectoryW`로(2차 감사 D2에서 `GetSystemWindowsDirectoryW`로 바꿈)(`ProtectContext::from_system`, `ScanConfig::for_target`). 승격 실행은 M4 요구사항(관리자 권한으로 실행하지 않음) | `paths::tests::audit_13_windows_dir_comes_from_the_os`, `protect::tests::audit_13_system_root_ignores_the_environment`, `scan::tests::audit_13_scan_config_system_root_from_the_os` |
 
 - 보고서의 "막혀 있음을 확인한 것"도 회귀 테스트로 옮겼다. ſ·ı·켈빈 이름은 `audit_10_lookalike_names_stay_distinct`, 없는 경로의 `~`(S12 복원에서 `~cache` 같은 이름이 늘 거부되던 것)는 `audit_tilde_in_missing_path_is_compared_as_written`이다. 쌍둥이 없는 `evil.`, 끝 공백 폴더, `..`, 스트림 문법, 장치 경로, 없는 8.3 이름은 기존 `protect` 테스트와 `audit_01_lone_odd_folder_is_read`가 지킨다.
 - PoC p4가 출력만 하고 보고서가 판정하지 않은 파일 이름 중 `.git-credentials`, `vault.1pux`(`.1pux`), `export.agilekeychain`(`.agilekeychain`, 폴더로도), `default_wallet`, `key4.db`는 사용자 결정(2026-11-12)으로 D12 목록에 넣었다. `logins.json`은 이름이 흔해 뺐다(Firefox 프로필 경로로 이미 보호됨). 백업 접미사에 끝의 `~`도 더했다. 테스트 `audit_p4_credential_names_added_to_d12`.
 - 같이 고친 것: 8.3 긴 이름 조회는 8.3 모양 구성요소(`이름~숫자`, 8.3 길이)에만 한다(`looks_short`). 전에는 `~`가 든 이름이면 다 조회해서, 없는 `$WINDOWS.~BT` 같은 경로가 "시스템"이 아니라 "확인 불가"로 판정됐다.
 - 규칙 파일 버전을 2로 올렸다(`outside_repo_grade`, Hugging Face 패턴). `outside_repo_grade`는 원래 등급보다 조심스럽고 멈춤 여부가 같아야 한다(스키마 검사).
+
+## 2차 보안 감사 반영 (2026-11-12)
+
+2차 감사(세션 `180885f2`의 최종 보고, PoC는 그 세션 스크래치패드의 `poc\src\main.rs`)를 사용자 지시대로 반영했다. 1차 감사 13건의 재현 테스트는 모두 통과한 상태에서, 새 구멍 9건(A1~A4, B1~B5)과 불완전한 수정 2건(C1·C2), 참고 4건(D1~D4)이 나왔다. 테스트 이름은 `audit2_<항목>_…`이다.
+
+| 항목 | 보고 내용 | 바꾼 것 | 재현 테스트 |
+| --- | --- | --- | --- |
+| B1(T4 전 필수) | 노드당 사유 하나라 `merge` 뒤 `lifted(true)`가 경계에서 다른 사유까지 잃음: `Self_(CredentialFile)`+`Contains(VirtualDisk)` → 없음 | `Protections`(자기·품은 사유 집합, `Reason::rank`로 정렬·중복 제거). `lifted(stop_folder)`는 멈추는 사유만 걷어냄. `Protection::merge` 삭제. `Verdict`는 대표 사유(`protection`)와 전체 집합(`protections`)을 함께 가짐 | `protect::tests::audit2_b1_boundary_keeps_the_other_reasons`(두 재현, 두 순서), `protect_sets_ignore_order_and_show_the_strongest` |
+| A2 | `node_modules\x.opvault\Google\Chrome\User Data\…`, `node_modules\pkg\.ssh\od`(동기화 루트)가 통과. 이름 검사가 먼저 걸려 위치·동기화 사유를 가림 | `canon_protections`가 모든 검사를 돌려 사유를 다 모음. `check_subtree`는 경계 안에서 멈추는 사유만 뺌 | `audit2_a2_vault_name_does_not_hide_a_profile`, `audit2_a2_ssh_name_does_not_hide_a_sync_root` |
+| A3 | 한글 8.3 별칭 `인천대~1`(11바이트)을 바이트 길이 검사 때문에 펼치지 않음 | `looks_short`는 길이를 보지 않고 기본 부분이 `~숫자`로 끝나면 펼쳐 봄 | `audit2_a3_non_ascii_short_name_is_expanded`(이 PC에서 실제 한글 별칭 생성 확인) |
+| A1 | 짝 없는 서로게이트 이름 `a\uD800`과 쌍둥이 `a\uFFFD`: 이름을 문자열로 바꿔 다시 이어 붙여 쌍둥이를 두 번 읽음 | `check_subtree`가 `OsString` 이름을 그대로 이어 붙임(문자열은 비교에만). M2 `walk.rs`·`accounting.rs`도 `dir.join(entry.file_name())` | `audit2_a1_unpaired_surrogate_twin` |
+| A4 | 링크를 거쳐 등록된 동기화 루트(`link\od`, `link`→`data`)의 실제 폴더 `data\od`가 보호되지 않음. 정션으로 옮긴 크롬 프로필도 같음 | 동기화 루트는 `GetFinalPathNameByHandleW`로 최종 경로도 루트로 둠(`paths::final_path`). 브라우저 프로필 이동은 SPEC에 감지 한계로 기록 | `audit2_a4_sync_root_behind_a_link` |
+| B3 | `%APPDATA%\nvm`, fnm, Volta, `C:\nodejs`의 `node_modules`가 규칙에 걸림 | 제외 목록에 nvm·fnm·Volta 위치와 `NVM_HOME`·`NVM_SYMLINK`·`FNM_DIR`·`VOLTA_HOME`. `node.exe`가 든 폴더는 설치 루트(`INSTALL_MARKERS`): 그 옆과 아래 어디서도 이름 규칙이 걸리지 않음(`StopFolders::install_root`, T4 순회도 같은 표식을 씀) | `audit2_b3_node_installs_are_excluded` |
+| B4 | `db.kdbx.bak2`·`.1`·`.old.bak`·날짜, `.ssh` 밖 `id_rsa` 등이 안 걸림 | 백업 끝마디를 최대 8겹까지 반복해서 벗김(백업 단어+숫자, 숫자·날짜 마디, 끝 `~`). `id_rsa`·`id_ed25519`·`id_ecdsa` 추가. `.env`·`.npmrc`, `*.pub`는 넣지 않음 | `audit2_b4_more_name_variants` |
+| B5 | `APPDATA`가 없으면 `npm` 제외가 사라져 규칙이 걸림. `not_inside`도 같음 | 꼭 있어야 할 변수(`REQUIRED_VARS`)를 못 풀면 이름 규칙 전체를 끔(그 폴더들은 "모름"). 선택적 변수(`SCOOP` 등)는 없어도 됨. 못 푼 `not_inside`는 그 규칙을 끔 | `audit2_b5_unresolved_exclusions_fail_closed` |
+| C1 | 8.3 별칭으로 등록된 루트를 원본 그대로 저장해 `contains(긴 경로)`가 거짓 | 루트를 `CanonPath`(긴 이름) 형태로 저장(`CanonPath::to_path_buf`) | `audit2_c1_short_name_root_is_stored_expanded` |
+| C2 | `USERPROFILE`에 `..`가 있으면 M2 계산의 사용자 폴더 비교가 빗나가 감지 전부 실패에도 계산이 돎 | `scan/mod.rs`가 사용자 폴더를 `CanonPath`로 정규화해 비교. 정규화할 수 없으면 계산 전부 막음 | `scan::tests::audit2_c2_user_folder_with_dotdot_blocks_accounting` |
+| D1 | 순회 결과의 자식 노드 경로에 `\\?\`가 붙음(화면에 그대로 보임) | `\\?\`는 읽는 호출에만. 자식 경로는 일반 경로에 이름을 이어 붙임 | `scan::tests::audit2_d1_node_paths_are_plain` |
+| D2 | `GetWindowsDirectoryW`는 터미널 서비스에서 사용자별 폴더를 줄 수 있음 | `GetSystemWindowsDirectoryW` | 기존 `audit_13_*` 세 개 |
+| D3 | `key4.db` 추가로 Selenium·Playwright가 Temp에 남긴 Firefox 임시 프로필이 영영 선택 불가 | **바꾸지 않음(사용자 결정).** 판단: 진짜 키 DB와 임시 프로필의 키 DB를 파일 이름으로 가를 방법이 없고, 막는 쪽 오류(공간을 덜 비움)가 여는 쪽 오류(키 DB 격리)보다 싸다. 그 Temp 항목은 가상 행에서 빠져 "7일 이내이거나 보호 대상을 품은 항목" 모음 행(4)으로 가며, 사용자는 탐색기에서 직접 지울 수 있다 | — |
+| D4 | `node_modules.`(끝 점)도 규칙 폴더로 맞음 | **바꾸지 않음(사용자 결정).** 판단: 비교 형태가 Win32처럼 끝 점을 떼서 생기는 일이고, `\\?\`로 읽으므로 그 폴더 자체의 내용을 정확히 본다. 진짜 `node_modules`와 같은 판정·같은 권한이라 새로 열리는 위험이 없다 | — |
+
+- B2(등록하지 않는 동기화 도구)는 위 "다음 단계로 미루는 것 > M4"의 M4 전 선행 작업으로 넣었다.
+- 2차 감사의 "지난 감사 수정 확인" 표에서 1차 4·12번은 M4 요구사항으로 남고, `commands.rs`가 경로를 받지 않는다는 것을 감사가 확인했다.
 
 ## 우려 사항 대응표
 
@@ -677,7 +706,7 @@ eng 리뷰(2026-10-30)의 결정과 Outside Voice 10번(빠진 작업·순서)�
   - 구현 메모(2026-11-12, 계획에 없던 판단): (1) `Windows.old`를 `protect.rs` 보호 목록에 넣었다(SPEC 1-1 매핑은 "모두 보호 대상"인데 T1 목록에 없어 "모름"으로 선택될 뻔했다). 선택은 막고 action은 `official_tool`이라 "공식 도구" 칸에 들어가며, 근거 줄은 "설정 > 시스템 > 저장소 > 임시 파일 > 이전 Windows 설치"를 안내한다(사용자 2026-11-12). (2) `%LOCALAPPDATA%\Programs` 폴더 자체에도 `uninstall_app` 규칙을 뒀다(`Programs\*`만 있으면 `Programs`를 통째로 고를 수 있다). (3) 패턴에 `%VAR%\경로\*`(바로 아래 폴더 각각)를 세 번째 형태로 받는다(`Programs\*`에 필요). (4) pnpm 저장소는 M2 허용 목록과 맞춰 세 위치(`pnpm\store`, `pnpm-store`, `%USERPROFILE%\.pnpm-store`)에 규칙을 뒀다. (5) `sibling_exists`는 적힌 이름이 **모두** 있어야 걸린다. (6) Documents·Desktop·Pictures·Videos·Music은 `SHGetKnownFolderPath`(`KF_FLAG_DONT_VERIFY`)로 실제 위치를 찾아 그 폴더 자체를 사용자 데이터로 고정하고, 규칙에 안 걸린 하위도 같은 고정을 받는다(사용자 2026-11-12). 다른 드라이브로 옮긴 폴더도 잡히고, 옮긴 뒤의 옛 이름(`%USERPROFILE%\Documents`)은 고정하지 않는다. 셸이 위치를 돌려주지 못한 폴더만 `%USERPROFILE%\<이름>`으로 대신한다. `ProtectContext::from_system`이 조회하고, 테스트는 `with_personal_folders`로 위치를 넣는다. (7) 판정 순서는 자기 보호 → 폴더 자체 고정 → 자기 규칙 → 상위 고정 → 상위의 멈추지 않는 규칙 → 모름이다. (8) 근거 한 줄(`Verdict.reason`)은 Rust가 만든다(규칙이면 `description`).
 - [x] **T3 (P1, human: ~1시간 / CC: ~10분)** — M2 기준선 측정(검증 4-1의 M2 쪽). `node_modules` 3,000개 픽스처를 만들고, 이 계획의 코드가 들어가기 전 커밋에서 최대 작업 메모리·결과 JSON 크기·순회 시간을 기록한다. T4를 합치기 전에 끝낸다(Outside Voice 10번)
   - Verify: 측정값이 이 계획 "남은 할 일"에 기록됨
-- [ ] **T4 (P1, human: ~1.5일 / CC: ~40분)** — 순회(`walk.rs`): 목록 전체를 읽은 뒤 규칙 매칭(D3), 등급 기준 멈춤(D9), 규칙 노드와 조상 남김, 보호 사실 상향 전파(동기화 루트 목록을 `WalkConfig`에, 자격 증명 파일·폴더 경계 D12와 2026-11-12 조정, `protect::Protection::lifted`), 읽기 실패 전파(`read_dir` 실패·속성 읽기 실패·깊이 초과 → 그 폴더와 상위 `Contains(Unreadable)`, 2026-11-12), `latest_touch`(생성일, D10), 확장자별 정확한 합. 보안 감사(2026-11-12) 반영: 규칙 매칭에 넘기는 형제 목록은 파일 이름만(감사 2번), 자격 증명 경계는 `Rule::stop()`이 `Stop::Bounded`인 내장 규칙 폴더에서만(감사 2번), 노드마다 `Facts.in_repo`(상위에 `.git`, 규칙 폴더 아래의 `.git`은 제외)를 채움(감사 5번), `ProtectContext::sync_unverified`로 D11 차단
+- [ ] **T4 (P1, human: ~1.5일 / CC: ~40분)** — 순회(`walk.rs`): 목록 전체를 읽은 뒤 규칙 매칭(D3), 등급 기준 멈춤(D9), 규칙 노드와 조상 남김, 보호 사실 상향 전파(동기화 루트 목록을 `WalkConfig`에, 자격 증명 파일·폴더 경계 D12와 2026-11-12 조정, `protect::Protection::lifted`), 읽기 실패 전파(`read_dir` 실패·속성 읽기 실패·깊이 초과 → 그 폴더와 상위 `Contains(Unreadable)`, 2026-11-12), `latest_touch`(생성일, D10), 확장자별 정확한 합. 보안 감사(2026-11-12) 반영: 규칙 매칭에 넘기는 형제 목록은 파일 이름만(감사 2번), 자격 증명 경계는 `Rule::stop()`이 `Stop::Bounded`인 내장 규칙 폴더에서만(감사 2번), 노드마다 `Facts.in_repo`(상위에 `.git`, 규칙 폴더 아래의 `.git`은 제외)를 채움(감사 5번), `ProtectContext::sync_unverified`로 D11 차단. 2차 감사(2026-11-12) 반영: 노드 보호는 `Protections`(사유 집합)로 모으고 부모로는 `Protections::lifted(내장 규칙 폴더 여부)`로 올림(B1), 목록에 `node.exe`가 있으면(`rules::pattern::is_install_root`) 그 아래로는 규칙 매칭을 하지 않음(B3), 노드 경로는 일반 경로에 `entry.file_name()`을 이어 붙임(D1·A1)
   - Files: `src-tauri/src/core/scan/{walk,policy,mod}.rs`
   - Verify: `cargo test scan` (D9 Downloads, 사용자 규칙 멈춤 기준)
 - [ ] **T5 (P1, human: ~2일 / CC: ~45분)** — 정리 단계 `scan/tree.rs`(D3): 묶음, `in_tree`, 묶음 전용 조상 제거와 `parent_id` 재연결, 모음 행(`kind: rest`, "자식" 정의는 Outside Voice 1번), Temp 가상 행 표시(구성원 판정 D10·D23), `tree_bytes`(D6), `category`(D15), 칸별 `blocked_bytes`(D24), M2 회귀 테스트 `m2_regression_rule_free_tree_unchanged`(D17)

@@ -194,7 +194,7 @@ fn walk_dir(
             }
         };
         let Ok(meta) = entry.metadata() else {
-            sh.skip(&entry.path(), "속성 읽기 실패");
+            sh.skip(&path.join(entry.file_name()), "속성 읽기 실패");
             continue;
         };
         let ename = entry.file_name().to_string_lossy().into_owned();
@@ -221,7 +221,7 @@ fn walk_dir(
                 *node.exts.entry(ext_of(&ename)).or_default() += size;
                 if is_sys_file {
                     node.children.push(TreeNode {
-                        path: entry.path(),
+                        path: path.join(entry.file_name()),
                         name: ename,
                         logical: Some(size),
                         files: Some(1),
@@ -234,7 +234,8 @@ fn walk_dir(
                 }
             }
             EntryKind::Dir => {
-                let child_path = entry.path();
+                // Joined to the plain path: `\\?\` is only for the read itself (2nd audit D1).
+                let child_path = path.join(entry.file_name());
                 let d = sh.cfg.policy.decide(&child_path, &ename, measure_only);
                 match d.policy {
                     DirPolicy::Skip => {}
