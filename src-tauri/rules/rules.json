@@ -1,0 +1,181 @@
+{
+  "schema": 1,
+  "version": 2,
+  "rules": [
+    {
+      "id": "npm-cache",
+      "bundle": "dev_ai",
+      "pattern": "%LOCALAPPDATA%\\npm-cache",
+      "name": "npm 캐시",
+      "grade": "safe",
+      "action": "quarantine",
+      "description": "npm이 내려받은 패키지 사본입니다. 지워도 다음 설치 때 다시 받습니다.",
+      "restore_hint": "npm install 때 자동으로 다시 받습니다"
+    },
+    {
+      "id": "pip-cache",
+      "bundle": "dev_ai",
+      "pattern": "%LOCALAPPDATA%\\pip\\Cache",
+      "name": "pip 캐시",
+      "grade": "safe",
+      "action": "quarantine",
+      "description": "pip이 내려받은 패키지와 빌드한 휠의 사본입니다.",
+      "restore_hint": "pip install 때 자동으로 다시 받습니다"
+    },
+    {
+      "id": "uv-cache",
+      "bundle": "dev_ai",
+      "pattern": "%LOCALAPPDATA%\\uv\\cache",
+      "name": "uv 캐시",
+      "grade": "safe",
+      "action": "quarantine",
+      "description": "uv가 내려받은 패키지 사본입니다. 가상 환경이 하드링크로 함께 쓰는 파일은 '실제 확보'에서 빠집니다.",
+      "restore_hint": "uv sync 때 자동으로 다시 받습니다"
+    },
+    {
+      "id": "pnpm-store",
+      "bundle": "dev_ai",
+      "pattern": "%LOCALAPPDATA%\\pnpm\\store",
+      "name": "pnpm 저장소",
+      "grade": "likely_safe",
+      "action": "quarantine",
+      "description": "pnpm 프로젝트들이 하드링크로 함께 쓰는 패키지 저장소입니다. 지우면 그 프로젝트들에서 설치를 다시 해야 합니다.",
+      "restore_hint": "각 프로젝트에서 pnpm install"
+    },
+    {
+      "id": "pnpm-store-local",
+      "bundle": "dev_ai",
+      "pattern": "%LOCALAPPDATA%\\pnpm-store",
+      "name": "pnpm 저장소",
+      "grade": "likely_safe",
+      "action": "quarantine",
+      "description": "pnpm 프로젝트들이 하드링크로 함께 쓰는 패키지 저장소입니다. 지우면 그 프로젝트들에서 설치를 다시 해야 합니다.",
+      "restore_hint": "각 프로젝트에서 pnpm install"
+    },
+    {
+      "id": "pnpm-store-home",
+      "bundle": "dev_ai",
+      "pattern": "%USERPROFILE%\\.pnpm-store",
+      "name": "pnpm 저장소",
+      "grade": "likely_safe",
+      "action": "quarantine",
+      "description": "pnpm 프로젝트들이 하드링크로 함께 쓰는 패키지 저장소입니다. 지우면 그 프로젝트들에서 설치를 다시 해야 합니다.",
+      "restore_hint": "각 프로젝트에서 pnpm install"
+    },
+    {
+      "id": "gradle-caches",
+      "bundle": "dev_ai",
+      "pattern": "%USERPROFILE%\\.gradle\\caches",
+      "name": "Gradle 캐시",
+      "grade": "safe",
+      "action": "quarantine",
+      "description": "Gradle이 내려받은 의존성과 빌드 캐시입니다.",
+      "restore_hint": "다음 빌드 때 자동으로 다시 받습니다"
+    },
+    {
+      "id": "node-modules",
+      "bundle": "dev_ai",
+      "pattern": "**\\node_modules",
+      "when": { "sibling_exists": ["package.json"] },
+      "name": "node_modules",
+      "grade": "safe",
+      "outside_repo_grade": "likely_safe",
+      "action": "quarantine",
+      "description": "package.json 옆에 설치된 Node 패키지입니다. 프로젝트 파일은 건드리지 않습니다.",
+      "restore_hint": "프로젝트에서 npm install"
+    },
+    {
+      "id": "next-build",
+      "bundle": "dev_ai",
+      "pattern": "**\\.next",
+      "when": { "sibling_exists": ["package.json"] },
+      "name": "Next.js 빌드 캐시",
+      "grade": "safe",
+      "outside_repo_grade": "likely_safe",
+      "action": "quarantine",
+      "description": "Next.js가 만든 빌드 결과와 캐시입니다.",
+      "restore_hint": "next build 또는 next dev 때 다시 만듭니다"
+    },
+    {
+      "id": "cargo-target",
+      "bundle": "dev_ai",
+      "pattern": "**\\target",
+      "when": { "sibling_exists": ["Cargo.toml"] },
+      "name": "Rust 빌드 산출물",
+      "grade": "safe",
+      "outside_repo_grade": "likely_safe",
+      "action": "quarantine",
+      "description": "Cargo.toml 옆의 target 폴더로, cargo가 만든 빌드 결과입니다.",
+      "restore_hint": "cargo build 때 다시 만듭니다"
+    },
+    {
+      "id": "huggingface-cache",
+      "bundle": "dev_ai",
+      "pattern": "%USERPROFILE%\\.cache\\huggingface\\hub",
+      "name": "Hugging Face 캐시",
+      "grade": "likely_safe",
+      "action": "quarantine",
+      "description": "Hugging Face 라이브러리가 내려받은 모델 저장소(hub)입니다. 로그인 토큰이 있는 상위 폴더는 건드리지 않습니다. 다시 받는 데 시간이 걸릴 수 있습니다.",
+      "restore_hint": "다음에 쓸 때 다시 받습니다"
+    },
+    {
+      "id": "ollama-models",
+      "bundle": "dev_ai",
+      "pattern": "%USERPROFILE%\\.ollama\\models",
+      "name": "Ollama 모델",
+      "grade": "likely_safe",
+      "action": "quarantine",
+      "description": "Ollama가 내려받은 모델 파일입니다. 다시 받는 데 시간이 걸릴 수 있습니다.",
+      "restore_hint": "ollama pull로 다시 받습니다"
+    },
+    {
+      "id": "user-temp",
+      "bundle": "windows",
+      "pattern": "%LOCALAPPDATA%\\Temp",
+      "target_mode": "contents_older_than",
+      "older_than_days": 7,
+      "name": "임시 파일",
+      "grade": "safe",
+      "action": "quarantine",
+      "description": "7일 넘게 만들거나 고친 적이 없는 임시 파일입니다. Temp 폴더 자체와 최근 항목은 옮기지 않습니다.",
+      "restore_hint": "앱이 필요하면 다시 만듭니다"
+    },
+    {
+      "id": "local-programs",
+      "bundle": "windows",
+      "pattern": "%LOCALAPPDATA%\\Programs",
+      "name": "사용자별 설치 앱",
+      "grade": "unknown",
+      "action": "uninstall_app",
+      "description": "이 사용자만 쓰도록 설치된 앱들의 폴더입니다. 앱 제거 화면에서 정리하세요."
+    },
+    {
+      "id": "local-programs-app",
+      "bundle": "windows",
+      "pattern": "%LOCALAPPDATA%\\Programs\\*",
+      "name": "사용자별 설치 앱",
+      "grade": "unknown",
+      "action": "uninstall_app",
+      "description": "이 사용자만 쓰도록 설치된 앱입니다. 앱 제거 화면에서 정리하세요."
+    },
+    {
+      "id": "google-play-games",
+      "bundle": "windows",
+      "pattern": "%LOCALAPPDATA%\\Google\\Play Games",
+      "name": "Google Play Games 데이터",
+      "grade": "likely_safe",
+      "action": "quarantine",
+      "description": "Google Play Games의 게임 이미지와 데이터입니다. 쓰지 않는다면 앱을 제거하는 편이 낫습니다.",
+      "restore_hint": "게임을 다시 내려받습니다"
+    },
+    {
+      "id": "downloads",
+      "bundle": "windows",
+      "pattern": "%USERPROFILE%\\Downloads",
+      "name": "다운로드",
+      "grade": "user_data",
+      "action": "quarantine",
+      "description": "직접 내려받은 파일입니다. 필요한 것이 남아 있는지 확인한 뒤 고르세요."
+    }
+  ]
+}

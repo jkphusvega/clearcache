@@ -123,7 +123,7 @@ pub struct ScanConfig {
 
 impl ScanConfig {
     pub fn for_target(t: &ScanTarget, threshold: u64) -> Self {
-        let system_root = paths::env_path("SystemRoot");
+        let system_root = paths::windows_dir();
         let system_drive = system_root
             .as_deref()
             .and_then(paths::drive_letter)
@@ -391,7 +391,9 @@ fn plan_accounting(
         {
             continue;
         }
+        // Fail closed: without a user folder there is no telling what is inside it.
         let blocked = n.in_sync_root
+            || cfg.user_home.is_none()
             || (sync.all_failed
                 && cfg
                     .user_home

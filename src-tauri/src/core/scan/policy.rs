@@ -45,7 +45,7 @@ const ROOT_UNMEASURED: &[&str] = &[
     "PerfLogs",
 ];
 
-const ROOT_SYSTEM_FILES: &[&str] = &["hiberfil.sys", "pagefile.sys", "swapfile.sys"];
+pub const ROOT_SYSTEM_FILES: &[&str] = &["hiberfil.sys", "pagefile.sys", "swapfile.sys"];
 
 #[derive(Debug, Clone)]
 pub struct PolicyContext {
@@ -82,11 +82,11 @@ impl PolicyContext {
         name: &str,
         parent_allow: Option<&[&'static str]>,
     ) -> DirDecision {
-        let lname = name.to_lowercase();
+        let is = |n: &str| paths::eq_ci(name, n);
 
         if let Some(allow) = parent_allow {
             // Inside a MeasureChildrenOnly parent: only allowed children are measured.
-            if allow.iter().any(|a| a.to_lowercase() == lname) {
+            if allow.iter().any(|a| is(a)) {
                 return DirDecision {
                     policy: DirPolicy::Descend,
                     tag: Some(TAG_SYSTEM),
@@ -96,11 +96,7 @@ impl PolicyContext {
             // `SoftwareDistribution\Download`: the head is itself measured-children-only.
             let nested: Vec<&'static str> = allow
                 .iter()
-                .filter_map(|a| {
-                    a.split_once('\\')
-                        .filter(|(h, _)| h.to_lowercase() == lname)
-                        .map(|(_, r)| r)
-                })
+                .filter_map(|a| a.split_once('\\').filter(|(h, _)| is(h)).map(|(_, r)| r))
                 .collect();
             if !nested.is_empty() {
                 return DirDecision {
@@ -139,28 +135,28 @@ impl PolicyContext {
         if !at_root {
             return DirDecision::descend();
         }
-        if lname == QUARANTINE_DIR.to_lowercase() {
+        if is(QUARANTINE_DIR) {
             return DirDecision {
                 policy: DirPolicy::Skip,
                 tag: None,
                 pinned: false,
             };
         }
-        if lname == "program files" || lname == "program files (x86)" {
+        if is("program files") || is("program files (x86)") {
             return DirDecision {
                 policy: DirPolicy::Descend,
                 tag: Some(TAG_SYSTEM_APPS),
                 pinned: true,
             };
         }
-        if lname == "windows.old" {
+        if is("windows.old") {
             return DirDecision {
                 policy: DirPolicy::Descend,
                 tag: Some(TAG_SYSTEM),
                 pinned: true,
             };
         }
-        if ROOT_UNMEASURED.iter().any(|n| n.to_lowercase() == lname) {
+        if ROOT_UNMEASURED.iter().any(|n| is(n)) {
             return DirDecision {
                 policy: DirPolicy::Unmeasured { tag: TAG_SYSTEM },
                 tag: Some(TAG_SYSTEM),
@@ -172,13 +168,13 @@ impl PolicyContext {
 
     /// Files shown as their own pinned node: root `*.sys` files and `%SystemRoot%\MEMORY.DMP`.
     pub fn is_system_file(&self, dir: &Path, name: &str) -> bool {
-        let lname = name.to_lowercase();
+        let is = |n: &str| paths::eq_ci(name, n);
         if let Some(dr) = &self.drive_root {
-            if paths::same_path(dir, dr) && ROOT_SYSTEM_FILES.contains(&lname.as_str()) {
+            if paths::same_path(dir, dr) && ROOT_SYSTEM_FILES.iter().any(|f| is(f)) {
                 return true;
             }
         }
-        lname == "memory.dmp"
+        is("memory.dmp")
             && self
                 .system_root
                 .as_deref()

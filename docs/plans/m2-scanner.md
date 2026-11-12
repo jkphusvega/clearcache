@@ -13,7 +13,7 @@
 > - 남은 할 일:
 >   - 디자인 리뷰(/plan-design-review)는 M3 계획 때 한다(네 종류 카드 화면).
 >     - **결정됨(사용자, 2026-10-23) — 크기 단위:** 탐색기와 같은 1024 단위에 "GB" 표기를 쓴다(GiB 표기 안 함). 크기에 마우스를 올리면 정확한 바이트 수를 툴팁으로 보여준다(크기, 실제 확보/공유되지 않음, 공유). DISM 등 10⁹ 단위 도구와 숫자가 달라 보이는 문제는 툴팁의 바이트 수로 대조한다. M2에서 구현함(`src/lib/format.ts` `formatExactBytes`, `sizeLabel` 툴팁). 디자인 리뷰에서 다시 논의하지 않는다.
->   - 라이선스(현재 MIT 임시)는 M3 규칙 작성 전에 확정한다.
+>   - 라이선스는 MIT로 확정했다(M3 계획 Q5, 2026-10-24).
 >   - 설계 문서의 Reviewer Concerns 중 M3 항목(R2-3, R2-4, R2-8, R2-14, R2-15)은 M3 계획에서 다룬다.
 > - 리뷰 결정 D9~D17은 모두 아래 "Decision ledger"에 있다.
 
@@ -155,12 +155,11 @@ src-tauri/
 - `src-tauri/src/core/**`, `src-tauri/examples/scan.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`
 - `src/App.tsx`, `src/components/{TargetPicker,ProgressBar,FolderTree,Summary}.tsx`, `src/types.ts`
 - `src/lib/{format,sizeLabel,sortTree}.ts`와 각각의 `*.test.ts`(D17). `package.json`: devDependency `vitest`, 스크립트 `"test": "vitest run"`
-- `LICENSE`(MIT, 임시)
+- `LICENSE`(MIT)
 
 ## 라이선스
 
-- MIT로 임시 결정했다. BleachBit(GPL) 규칙은 참고만 하고 복사하지 않는다. 규칙은 직접 작성하고, 출처는 문서 링크로만 남긴다.
-- M3에서 규칙을 쓰기 전에 최종 확정한다.
+- MIT로 정했고, M3 계획 Q5(2026-10-24)에서 확정했다. BleachBit(GPL) 규칙은 참고만 하고 복사하지 않는다. 규칙은 직접 작성하고, 출처는 문서 링크로만 남긴다.
 
 ## 테스트
 
@@ -203,7 +202,7 @@ SPEC 규칙에 따라 픽스처는 `C:\ClearCache_TestZone\scan-tests\<무작위
 
 - 2026-09-25: C:만 격리하고 다른 드라이브는 보기 전용으로 한다(유지).
 - 2026-09-25: 시스템 폴더는 들어가지 않고 "측정 안 함"으로 표시하기로 했으나, 2026-09-26 설계 문서 접근 B(D7)로 **대체**했다. 이제는 알려진 하위 폴더를 측정하고 Program Files는 전체를 측정한다.
-- 2026-09-26: 접근 B(core + CLI + exclusive_bytes), 클라우드 파일 미개봉과 동기화 루트 제외, MIT 임시 라이선스를 정했다(D7).
+- 2026-09-26: 접근 B(core + CLI + exclusive_bytes), 클라우드 파일 미개봉과 동기화 루트 제외, MIT 라이선스를 정했다(D7, M3 계획 Q5에서 확정).
 
 ## Decision ledger
 
@@ -550,7 +549,7 @@ Synthesized from this review's findings. Each task derives from a specific findi
   - Surfaced by: A1(D13), A2(D14), Q1(D15), Q2(D16)
   - Files: `src/components/*`, `src/App.tsx`, `src/types.ts`
   - Verify: `npm run tauri dev` 수동 체크리스트(Test Plan artifact)
-- [x] **T9 (P3, human: ~30min / CC: ~5min)** — 문서 — `LICENSE`(MIT 임시), SPEC 본문에 설계 문서의 네 종류 분류·확보량 모델 반영(v1.3 약속)
+- [x] **T9 (P3, human: ~30min / CC: ~5min)** — 문서 — `LICENSE`(MIT), SPEC 본문에 설계 문서의 네 종류 분류·확보량 모델 반영(v1.3 약속)
   - Surfaced by: 설계 문서 승인(D8), SPEC v1.3 개정 이력
   - Files: `LICENSE`, `SPEC.md`
   - Verify: 문서 검토

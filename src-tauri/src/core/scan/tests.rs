@@ -21,7 +21,8 @@ fn cfg(root: &Path) -> ScanConfig {
             system_root: None,
         },
         accounting_roots: vec![],
-        user_home: None,
+        // A user folder outside every fixture: without one, accounting fails closed.
+        user_home: Some(PathBuf::from(r"C:\Users\clearcache-test-nobody")),
         read_only_volume: false,
         drive_used_bytes: None,
     }
@@ -468,4 +469,86 @@ fn scan_result_json_shape() {
         assert!(v["nodes"][0].get(k).is_some(), "node.{k}");
     }
     assert_eq!(v["summary"]["accounting_status"], "not_needed");
+}
+
+// --- Security audit (2026-11-12): the M2 scanner had the same plain-path reads ---
+
+/// Audit 1·9: a folder named `evil.` is listed, but a plain-path read of it opens `evil`.
+/// Its bytes must be counted by the walk and by accounting, not swapped for the sibling's.
+#[test]
+fn audit_01_scan_reads_odd_names_through_verbatim_paths() {
+    use crate::core::testzone::{odd_dir, write_verbatim};
+    let fx = fixture();
+    let root = fx.path();
+    let cache = root.join("uvcache");
+    odd_dir(&cache.join("evil."));
+    write_verbatim(&cache.join("evil.").join("hidden.bin"), 3000);
+    odd_dir(&cache.join("evil")); // empty decoy that a plain read would open instead
+    odd_dir(&cache.join("space "));
+    write_verbatim(&cache.join("space ").join("s.bin"), 2000);
+    let mut c = cfg(root);
+    c.accounting_roots = vec![cache.clone()];
+
+    let sync = SyncRootDetection::default();
+    let progress = Progress::default();
+    let (mut r, plan) = walk_phase(&c, &sync, &progress).unwrap();
+    assert_eq!(r.nodes[0].logical_bytes, Some(5000));
+    assert_eq!(r.summary.skipped_count, 0);
+    let mut updates = Vec::new();
+    assert!(accounting_phase(
+        &plan,
+        &Win32Opener,
+        &sync,
+        &progress,
+        &mut |u| updates.push(u)
+    ));
+    for u in &updates {
+        r.apply(u);
+    }
+    let cache_id = node(&r, "uvcache").id as usize;
+    assert!(
+        r.nodes[cache_id].exclusive_bytes.unwrap() >= 5000,
+        "{:?}",
+        r.nodes[cache_id]
+    );
+}
+
+/// Audit 1·9: paths past MAX_PATH are read, not skipped.
+#[test]
+fn audit_01_scan_reads_past_max_path() {
+    use crate::core::testzone::write_verbatim;
+    let fx = fixture();
+    let root = fx.path();
+    let mut deep = root.join("deep");
+    while deep.to_string_lossy().len() < 300 {
+        deep = deep.join("a-fairly-long-folder-name");
+    }
+    write_verbatim(&deep.join("f.bin"), 4000);
+    let (r, _) = walk_only(&cfg(root));
+    assert_eq!(r.nodes[0].logical_bytes, Some(4000));
+    assert_eq!(r.summary.skipped_count, 0);
+}
+
+/// Audit 3: without a user folder there is no telling what lies inside it; accounting fails
+/// closed instead of opening files that may sit in an undetected sync root.
+#[test]
+fn audit_03_scan_without_user_folder_skips_accounting() {
+    let fx = fixture();
+    let root = fx.path();
+    let cache = root.join("uvcache");
+    write_file(&cache.join("a.whl"), 3000);
+    let mut c = cfg(root);
+    c.user_home = None;
+    c.accounting_roots = vec![cache];
+    let (r, plan) = walk_only(&c);
+    assert_eq!(node(&r, "uvcache").accounting, AccountingState::Unverified);
+    assert!(plan.scopes.is_empty());
+}
+
+/// Audit 13: the scan finds Windows through the OS, not `%SystemRoot%`.
+#[test]
+fn audit_13_scan_config_system_root_from_the_os() {
+    let t = crate::core::targets::user_home_target(PathBuf::from(r"C:\Users\x"));
+    let c = ScanConfig::for_target(&t, KIB);
+    assert_eq!(c.policy.system_root, crate::core::paths::windows_dir());
 }

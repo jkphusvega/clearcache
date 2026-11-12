@@ -160,7 +160,7 @@ fn walk_dir(
     }
     sh.progress.set_current(&path);
 
-    let read = match fs::read_dir(&path) {
+    let read = match fs::read_dir(crate::core::paths::verbatim(&path)) {
         Ok(r) => r,
         Err(e) => {
             sh.skip(&path, e.to_string());

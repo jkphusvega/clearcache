@@ -1,27 +1,60 @@
-//! Case-insensitive Windows path comparison helpers.
+//! Windows path helpers. Names compare the way NTFS matches them: ordinal, ignoring case with
+//! the OS uppercase table (`CompareStringOrdinal`). `to_lowercase` disagrees on some letters
+//! (Greek final sigma, Kelvin sign, …), so nothing here uses it for comparison.
 
 use std::path::{Path, PathBuf};
 
-/// Lowercased, `/`→`\`, verbatim prefix and trailing separators removed. For comparison only.
+/// Same name for NTFS: `CompareStringOrdinal(…, bIgnoreCase = TRUE)`. ASCII takes the fast path,
+/// which gives the same answer.
+pub fn eq_ci(a: &str, b: &str) -> bool {
+    if a.is_ascii() && b.is_ascii() {
+        return a.eq_ignore_ascii_case(b);
+    }
+    win::compare_ordinal_ci(a, b)
+}
+
+/// `s` ends with `suffix` (an ASCII extension or name) under `eq_ci`.
+pub fn ends_with_ci(s: &str, suffix: &str) -> bool {
+    s.len() >= suffix.len()
+        && s.is_char_boundary(s.len() - suffix.len())
+        && eq_ci(&s[s.len() - suffix.len()..], suffix)
+}
+
+/// Uppercased with the invariant OS table, for map keys where `eq_ci` cannot be used.
+pub fn fold(s: &str) -> String {
+    if s.is_ascii() {
+        return s.to_ascii_uppercase();
+    }
+    win::upper_invariant(s)
+}
+
+/// Comparison key: `/`→`\`, verbatim prefix and trailing separators removed, case folded.
 pub fn norm(path: &Path) -> String {
     let s = path.to_string_lossy().replace('/', "\\");
     let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
-    let s = s.trim_end_matches('\\');
-    s.to_lowercase()
+    fold(s.trim_end_matches('\\'))
+}
+
+fn components(path: &Path) -> Vec<String> {
+    let s = path.to_string_lossy().replace('/', "\\");
+    let s = s.strip_prefix(r"\\?\").unwrap_or(&s).to_string();
+    s.split('\\')
+        .filter(|c| !c.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// True if `path` is `root` or lies inside it (component boundary, case-insensitive).
 pub fn is_within(path: &Path, root: &Path) -> bool {
-    let p = norm(path);
-    let r = norm(root);
-    if r.is_empty() {
-        return false;
-    }
-    p == r || (p.starts_with(&r) && p.as_bytes().get(r.len()) == Some(&b'\\'))
+    let p = components(path);
+    let r = components(root);
+    !r.is_empty() && p.len() >= r.len() && p.iter().zip(&r).all(|(a, b)| eq_ci(a, b))
 }
 
 pub fn same_path(a: &Path, b: &Path) -> bool {
-    norm(a) == norm(b)
+    let a = components(a);
+    let b = components(b);
+    a.len() == b.len() && a.iter().zip(&b).all(|(x, y)| eq_ci(x, y))
 }
 
 /// Drive letter of a path like `C:\...` (uppercase), if any.
@@ -33,19 +66,156 @@ pub fn drive_letter(path: &Path) -> Option<char> {
     (letter.is_ascii_alphabetic() && chars.next() == Some(':')).then(|| letter.to_ascii_uppercase())
 }
 
-/// Win32 calls that take a raw path need the verbatim prefix past MAX_PATH.
-pub fn long_path(path: &Path) -> PathBuf {
+/// The `\\?\` form every file-system call takes. Win32 rewrites plain paths before using
+/// them: it drops trailing dots and spaces (`evil.` reads `evil`) and stops at MAX_PATH.
+/// Paths that are already verbatim or device paths, relative, or contain `.`/`..` (which a
+/// verbatim path would take literally) are returned unchanged.
+pub fn verbatim(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
-    if s.len() < 248 || s.starts_with(r"\\") {
+    if s.starts_with(r"\\?\") || s.starts_with(r"\\.\") {
         return path.to_path_buf();
     }
-    PathBuf::from(format!(r"\\?\{s}"))
+    let s = s.replace('/', "\\");
+    if s.split('\\').any(|c| c == "." || c == "..") {
+        return path.to_path_buf();
+    }
+    if let Some(unc) = s.strip_prefix(r"\\") {
+        return PathBuf::from(format!(r"\\?\UNC\{unc}"));
+    }
+    let b = s.as_bytes();
+    if b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\' {
+        return PathBuf::from(format!(r"\\?\{s}"));
+    }
+    path.to_path_buf()
 }
 
 pub fn env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
+}
+
+/// `GetWindowsDirectoryW`: where Windows is, whatever `%SystemRoot%` says in this process.
+pub fn windows_dir() -> Option<PathBuf> {
+    win::windows_dir()
+}
+
+/// The path Windows would use for `path`: `.` and `..` collapsed (`GetFullPathNameW`), and a
+/// volume GUID path (`\\?\Volume{…}\x`) turned into the volume's drive letter. Only for
+/// absolute drive, UNC and volume paths; `None` for anything else or when it cannot be done.
+pub fn resolve(path: &Path) -> Option<PathBuf> {
+    let s = path.to_string_lossy().replace('/', "\\");
+    if let Some(rest) = s.strip_prefix(r"\\?\Volume{") {
+        let end = rest.find('}')?;
+        let volume = format!(r"\\?\Volume{{{}}}\", &rest[..end]);
+        let tail = rest[end + 1..].trim_start_matches('\\');
+        return Some(win::volume_drive(&volume)?.join(tail));
+    }
+    let b = s.as_bytes();
+    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\';
+    let unc = s.starts_with(r"\\") && !s.starts_with(r"\\?\") && !s.starts_with(r"\\.\");
+    if !drive && !unc {
+        return None;
+    }
+    win::full_path(&s)
+}
+
+/// The volume GUID path (`\\?\Volume{…}\`) of a mounted drive, e.g. for `C:\`.
+#[cfg(test)]
+pub fn volume_guid(mount: &str) -> Option<String> {
+    win::volume_guid(mount)
+}
+
+mod win {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use std::path::PathBuf;
+    use windows::Win32::Foundation::LPARAM;
+    use windows::Win32::Globalization::{
+        CompareStringOrdinal, LCMapStringEx, CSTR_EQUAL, LCMAP_UPPERCASE, LOCALE_NAME_INVARIANT,
+    };
+    use windows::Win32::System::SystemInformation::GetWindowsDirectoryW;
+
+    pub fn compare_ordinal_ci(a: &str, b: &str) -> bool {
+        let a: Vec<u16> = a.encode_utf16().collect();
+        let b: Vec<u16> = b.encode_utf16().collect();
+        unsafe { CompareStringOrdinal(&a, &b, true) == CSTR_EQUAL }
+    }
+
+    pub fn upper_invariant(s: &str) -> String {
+        let src: Vec<u16> = s.encode_utf16().collect();
+        let mut dst = vec![0u16; src.len() * 2 + 1];
+        let n = unsafe {
+            LCMapStringEx(
+                LOCALE_NAME_INVARIANT,
+                LCMAP_UPPERCASE,
+                &src,
+                Some(&mut dst),
+                None,
+                None,
+                LPARAM(0),
+            )
+        };
+        if n <= 0 {
+            return s.to_uppercase();
+        }
+        String::from_utf16_lossy(&dst[..n as usize])
+    }
+
+    pub fn full_path(s: &str) -> Option<PathBuf> {
+        use windows::Win32::Storage::FileSystem::GetFullPathNameW;
+        let src = windows::core::HSTRING::from(s);
+        let mut buf = vec![0u16; 520];
+        loop {
+            let n = unsafe { GetFullPathNameW(&src, Some(&mut buf), None) } as usize;
+            if n == 0 {
+                return None;
+            }
+            if n < buf.len() {
+                return Some(OsString::from_wide(&buf[..n]).into());
+            }
+            buf.resize(n, 0);
+        }
+    }
+
+    /// First drive-letter mount point of a volume (`C:\`).
+    pub fn volume_drive(volume: &str) -> Option<PathBuf> {
+        use windows::Win32::Storage::FileSystem::GetVolumePathNamesForVolumeNameW;
+        let name = windows::core::HSTRING::from(volume);
+        let mut buf = vec![0u16; 1024];
+        let mut len = 0u32;
+        unsafe { GetVolumePathNamesForVolumeNameW(&name, Some(&mut buf), &mut len) }.ok()?;
+        // A list of NUL-terminated paths ending in an empty one.
+        buf[..len as usize]
+            .split(|&c| c == 0)
+            .map(String::from_utf16_lossy)
+            .find(|p| p.len() == 3 && p.ends_with(r":\"))
+            .map(PathBuf::from)
+    }
+
+    #[cfg(test)]
+    pub fn volume_guid(mount: &str) -> Option<String> {
+        use windows::Win32::Storage::FileSystem::GetVolumeNameForVolumeMountPointW;
+        let m = windows::core::HSTRING::from(mount);
+        let mut buf = vec![0u16; 64];
+        unsafe { GetVolumeNameForVolumeMountPointW(&m, &mut buf) }.ok()?;
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..end]))
+    }
+
+    pub fn windows_dir() -> Option<PathBuf> {
+        let mut buf = vec![0u16; 260];
+        loop {
+            let n = unsafe { GetWindowsDirectoryW(Some(&mut buf)) } as usize;
+            if n == 0 {
+                return None;
+            }
+            if n < buf.len() {
+                return Some(OsString::from_wide(&buf[..n]).into());
+            }
+            buf.resize(n, 0);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -77,5 +247,61 @@ mod tests {
         assert_eq!(drive_letter(Path::new(r"d:\x")), Some('D'));
         assert_eq!(drive_letter(Path::new(r"\\?\C:\x")), Some('C'));
         assert_eq!(drive_letter(Path::new(r"\\server\share")), None);
+    }
+
+    /// Audit 10: `to_lowercase` merges names NTFS keeps apart, so a rule, exclusion or sync
+    /// root could match a different folder. These pairs are distinct for `CompareStringOrdinal`
+    /// (checked on Windows 11) but equal after `to_lowercase`.
+    #[test]
+    fn audit_10_names_compare_like_ntfs() {
+        for (a, b) in [
+            ("straße", "STRAẞE"),
+            ("\u{212A}ube", "kube"),   // Kelvin sign
+            ("\u{2126}mega", "ωmega"), // Ohm sign
+            ("\u{1C5}x", "\u{1C6}x"),  // ǅ and ǆ
+        ] {
+            assert_eq!(a.to_lowercase(), b.to_lowercase(), "{a} {b}");
+            assert!(!eq_ci(a, b), "{a} {b}");
+            assert_ne!(fold(a), fold(b), "{a} {b}");
+            assert!(!same_path(
+                Path::new(&format!(r"C:\Users\me\{a}")),
+                Path::new(&format!(r"C:\Users\me\{b}"))
+            ));
+        }
+        // Real case pairs still match, ASCII or not.
+        for (a, b) in [("OneDrive", "onedrive"), ("σü", "ΣÜ"), ("ÿ", "Ÿ")] {
+            assert!(eq_ci(a, b), "{a} {b}");
+            assert_eq!(fold(a), fold(b), "{a} {b}");
+        }
+        assert!(is_within(
+            Path::new(r"C:\Users\me\ΣÜ\x"),
+            Path::new(r"c:\users\ME\σü")
+        ));
+        assert!(ends_with_ci("db.KDBX", ".kdbx"));
+        assert!(!ends_with_ci("ü", ".kdbx"));
+    }
+
+    #[test]
+    fn verbatim_forms() {
+        assert_eq!(
+            verbatim(Path::new(r"C:\a\b.")),
+            PathBuf::from(r"\\?\C:\a\b.")
+        );
+        assert_eq!(verbatim(Path::new(r"C:\")), PathBuf::from(r"\\?\C:\"));
+        assert_eq!(verbatim(Path::new("C:/a/b")), PathBuf::from(r"\\?\C:\a\b"));
+        assert_eq!(
+            verbatim(Path::new(r"\\srv\share\x")),
+            PathBuf::from(r"\\?\UNC\srv\share\x")
+        );
+        for p in [r"\\?\C:\x", r"\\.\C:", r"rel\x", r"C:\a\..\b", r"C:rel"] {
+            assert_eq!(verbatim(Path::new(p)), PathBuf::from(p), "{p}");
+        }
+    }
+
+    /// Audit 13: the Windows folder comes from the OS, not from a variable anyone can set.
+    #[test]
+    fn audit_13_windows_dir_comes_from_the_os() {
+        let w = windows_dir().expect("GetWindowsDirectoryW");
+        assert!(w.join("System32").is_dir(), "{w:?}");
     }
 }

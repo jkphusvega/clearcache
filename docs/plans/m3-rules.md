@@ -1,6 +1,6 @@
 # M3 계획 (초안): 규칙 DB + 등급 판정 + 시스템 폴더 보호
 
-> **eng 리뷰 완료(2026-10-30), 다음은 M3a T0부터 구현.** 결정 D1~D24와 Outside Voice 정정은 아래 "Eng 리뷰 (2026-10-30)"에 있고, 작업 순서는 "Implementation Tasks"(M3a T0~T8, M3b T9~T14)를 따른다. 미결 U2~U10은 eng 리뷰에서 정했다(U1, U11, U12는 남음).
+> **eng 리뷰 완료(2026-10-30). M3a T0·T1(2026-10-30)·T2·T3(2026-11-12) 완료, 보안 감사 13건 반영(2026-11-12, "보안 감사 반영"), 다음은 T4(순회).** 결정 D1~D24와 Outside Voice 정정은 아래 "Eng 리뷰 (2026-10-30)"에 있고, 작업 순서는 "Implementation Tasks"(M3a T0~T8, M3b T9~T14)를 따른다. 미결 U2~U10은 eng 리뷰에서 정했다(U1, U11, U12는 남음).
 
 > **현재 상태 (2026-10-24): 초안, 범위 질문 Q1~Q5 결정 완료.** 승인 전에 `/plan-design-review`와 `/plan-eng-review`를 거친다. 구현은 시작하지 않았다.
 > - Q1~Q5는 사용자가 결정했다(아래 "결정됨"). 사용자 검토(2026-10-24)의 1~3번은 반영했다(자격 증명 보호 경로의 S2 전파, 모든 `**\` 규칙에 공통 적용하는 앱 설치 위치 제외 목록, 규칙 안 `.git` 비전파). SPEC v1.6에도 반영했다. 4~10번은 미결 U3~U9로 eng 리뷰에서 다룬다.
@@ -40,6 +40,11 @@ SPEC "개발 단계" M3 행을 그대로 따르고, 이 계획의 범위에서 �
 
 **다음 단계로 미루는 것**
 - M4: 격리·복원·완전 삭제, S1·S3·S4·S5·S6·S10·S12의 실행 단계 검사와 테스트, action_log. M3는 S3·S12가 쓸 **판정 함수**까지만 만든다. **격리·복원 커맨드는 요청에 실린 스캔 세대 번호가 현재 스캔의 세대와 다르면 무조건 거부한다**(eng 리뷰 D4, SPEC 안전 규칙 v1.7). 거부도 `action_log`에 남기고 테스트한다. **Temp 가상 행 격리**(eng 리뷰 D10): 구성원(Temp 바로 아래 항목)마다 따로 격리한다. 격리 직전 `check_item`이 항목의 나이를 다시 계산해 그사이 최근이 된 항목은 뺀다. 격리 시점에 사용 중(잠김, rename 실패)인 항목은 건너뛰고 결과에 이유("사용 중", "최근에 바뀜")와 함께 표시한다. 항목 하나의 rename은 S6대로 전부 아니면 없음이고, 건너뛴 항목은 다른 항목의 격리를 막지 않는다. **선택 합계는 화면 표시용이며, 격리 판단은 격리 직전 재검사로만 한다**(eng 리뷰 D18). 격리 커맨드는 M3의 선택 상태·합계 값을 근거로 쓰지 않는다. 경고 모달 두 종류(일반·강한) 모두에 "격리는 격리함에서 복원할 수 있습니다" 문구를 더한다(디자인 리뷰 3A). "격리함에 있는 용량"은 하단 선택 바의 격리 버튼 옆에 둔다(7A).
+  - **보안 감사 반영(2026-11-12, 사용자 결정)**. 위협 모델은 "사용자 실수와 앱 버그"이고 로컬 쓰기 권한이 있는 공격자는 아니다(SPEC 안전 규칙 앞머리). 그래도 아래는 M4 완료 조건이다.
+    - **검사와 이동 사이의 바꿔치기(감사 4번)**: `check_item`이 통과한 뒤 rename 전에 폴더나 그 상위가 링크로 바뀌면 다른 곳이 옮겨진다. 항목을 `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`로 한 번 열어 핸들을 쥔 채, 볼륨 번호와 파일 ID(`FILE_ID_INFO`)가 스캔 때와 같은지, 리파스 속성이 없는지 확인한다. 이동은 그 핸들로 한다(`SetFileInformationByHandle` + `FILE_RENAME_INFO`, 상위 핸들 기준). 이동 직후 격리함 안의 항목을 다시 열어 파일 ID가 같은지 재확인하고, 다르면 되돌리고 거부를 `action_log`에 남긴다. 상위 경로의 각 구성요소도 핸들로 열어 링크가 아닌지 확인한다(현재 `check_item`의 경로 기반 검사를 대체).
+    - **관리자 권한으로 실행하지 않음**: 매니페스트는 `asInvoker`. 시작할 때 토큰이 관리자(`TokenElevation`)면 안내 줄을 띄우고 격리·완전 삭제·복원 커맨드를 거부한다. SPEC 안전 규칙에도 적었다.
+    - **커맨드는 경로 문자열을 받지 않음(감사 12번)**: 격리·복원·완전 삭제 커맨드는 스캔 결과 id·격리함 항목 id와 세대만 받는다. 경로는 Rust 세션이 가진 값만 쓴다. 커맨드 인자 타입에 `String` 경로가 없는지 테스트(커맨드 시그니처 표)로 확인한다.
+    - **S12 복원 시 `~`가 든 원래 이름**: 8.3 모양 구성요소(`PROGRA~1`)는 원래 위치가 사라지면 긴 이름으로 바꿀 수 없어 `Unresolved`(거부)가 된다. 격리할 때 원래 경로를 `CanonPath`(긴 이름)로 바꿔 `quarantine` 테이블에 기록하고, 복원 검사는 그 기록으로 한다. `$WINDOWS.~BT`처럼 8.3 모양이 아닌 `~` 이름은 그대로 비교한다(M3에서 `looks_short`로 구현).
 - M5: AI 판정(판정 우선순위 3), `verdicts` 캐시. **SQLite 규칙 DB**(eng 리뷰 D1에서 M3에서 옮김): `rusqlite`(bundled), `%LOCALAPPDATA%\ClearCache\clearcache.db`, `rules` 테이블과 스키마 버전 테이블, 실행할 때마다 내장 `rules.json` 버전과 DB의 `builtin_version`을 비교해 `source=builtin` 행을 통째로 바꾸고 `source=user` 행은 건드리지 않는다. DB를 `RuleSource`의 두 번째 구현으로 붙인다(판정 코드는 그대로).
   - **DB 재생성(디자인 리뷰 2B에서 옮긴 문구, 사용자 2026-10-24)**: `clearcache.db`가 깨졌거나 열리지 않을 때 내장 규칙으로 DB를 자동으로 다시 만든다. 화면에는 "규칙 DB를 다시 만들었습니다" 안내만 띄우고, 재설치는 안내하지 않는다. 이 안내 줄은 M2의 동기화 감지 경고와 같은 자리·모양(표 위, 주황 테두리 줄)을 쓴다. 사용자 규칙이 생기는 M6에서는 다시 만들 때 사용자 규칙을 어떻게 지킬지 그때 정한다.
   - 테스트(M3에서 옮김): 버전이 올라가면 내장 규칙이 바뀌고 사용자 규칙은 남는다. 같은 버전이면 아무것도 바꾸지 않는다. 깨진 DB 파일(무작위 바이트, 빈 파일, 스키마 버전 불일치)을 주면 내장 규칙으로 다시 만들고 "DB 다시 만듦" 플래그가 선다. 다시 만든 뒤 판정 결과가 내장 규칙만 쓸 때와 같다. 테스트 DB는 픽스처 폴더에 만든다.
@@ -183,7 +188,7 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
 | 개발·AI | `**\node_modules` (옆에 `package.json`) † | 안전 (`npm install`로 복구) | quarantine | 폴더 |
 | 개발·AI | `**\.next` (옆에 `package.json`) † | 안전 | quarantine | 폴더 |
 | 개발·AI | `**\target` (옆에 `Cargo.toml`) † | 안전 (`cargo build`로 복구) | quarantine | 폴더 |
-| 개발·AI | `%USERPROFILE%\.cache\huggingface` | 아마 안전 (다시 받기) | quarantine | 폴더 |
+| 개발·AI | `%USERPROFILE%\.cache\huggingface\hub` (감사 11번, 토큰이 있는 상위 제외) | 아마 안전 (다시 받기) | quarantine | 폴더 |
 | 개발·AI | `%USERPROFILE%\.ollama\models` | 아마 안전 (`ollama pull`로 다시 받기) | quarantine | 폴더 |
 | Windows | `%LOCALAPPDATA%\Temp` | 안전 | quarantine | 7일 넘게 쓰이지 않은 항목만 |
 | Windows | `%LOCALAPPDATA%\Programs\*` (사용자별 설치 앱 폴더 각각) | 모름 (설치된 앱. 앱 제거로 해결) | uninstall_app (선택 불가) | 폴더 |
@@ -211,6 +216,7 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
   - `%LOCALAPPDATA%\Packages`
   - Windows 자격 증명·키 저장소: `%APPDATA%\Microsoft\Protect`(DPAPI 마스터 키), `%APPDATA%\Microsoft\Credentials`, `%LOCALAPPDATA%\Microsoft\Credentials`, `%APPDATA%\Microsoft\Crypto`
   - 이 폴더를 품은 상위 폴더(`%LOCALAPPDATA%\Google`, `AppData\Local`, `AppData\Roaming` 등)는 S2에 따라 선택 불가가 된다.
+  - **이름으로 찾은 자격 증명 폴더의 전파 경계(사용자 2026-11-12)**: `.ssh`·`.aws`·`.gnupg`·`.azure`·`.kube`는 위치와 관계없이 이름으로 찾고(`Reason::CredentialDir`), 자격 증명 파일(D12)과 같은 경계에서 전파를 멈춘다. "안전"·"아마 안전" 규칙 폴더 안에서 나오면 그 규칙 폴더까지만 선택 불가이고 그 위로는 올리지 않는다. 예: `proj\node_modules\pkg\test\.ssh`는 그 `node_modules`만 막고 `proj`와 같은 묶음의 다른 `node_modules`는 막지 않는다. 위치로 찾은 자격 증명 경로(브라우저 프로필, `Packages`, `Microsoft\{Protect,Credentials,Crypto}`, `Reason::CredentialPath`)는 지금처럼 규칙 폴더를 넘어 끝까지 올린다. 둘 다 걸리면(예: `Packages\<앱>\LocalState\.ssh`) 위치 쪽이 이긴다.
 - **통째로 격리 불가**: 드라이브 루트(`C:\`), `C:\Users`, `C:\Users\<사용자>`
 - **경로 정규화**:
   - 비교 전에 `\\?\` 접두를 떼고, 끝의 `\`를 정리하고, 대소문자를 무시한다.
@@ -237,7 +243,7 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
   - 파일 이름: `wallet.dat`(Bitcoin Core 지갑)
   - 폴더 이름: `*.opvault`(1Password 로컬 금고는 폴더 묶음이다. 그 폴더 자체가 자격 증명 보호다)
   - 넣지 않은 것: `.pem`·`.key`·`.crt`·`.cer`(공개 인증서·테스트 키가 개발 프로젝트에 흔해 오탐이 많음), `.gpg`·`.asc`(공개 키·서명이 흔함, 개인 키링은 `.gnupg` 경로 규칙이 막음), `.jks`·`.keystore`(Android 프로젝트와 `~\.android\debug.keystore`에 늘 있음), 확장자 없는 `id_rsa` 등(`.ssh` 경로 규칙이 막음).
-  - 전파: S2처럼 상위로 올린다. 단 "안전"·"아마 안전" 규칙 폴더 안에서 나오면 그 규칙 폴더까지만 선택 불가로 만들고 그 위로는 올리지 않는다(`.git`과 같은 경계, D9). 예: `node_modules\kdbxweb\test\a.kdbx`는 그 `node_modules`만 막고 프로젝트 폴더는 막지 않는다. 선택 불가 이유: "자격 증명 파일 포함(.kdbx)".
+  - 전파: S2처럼 상위로 올린다. 단 "안전"·"아마 안전" 규칙 폴더 안에서 나오면 그 규칙 폴더까지만 선택 불가로 만들고 그 위로는 올리지 않는다(`.git`과 같은 경계, D9). 예: `node_modules\kdbxweb\test\a.kdbx`는 그 `node_modules`만 막고 프로젝트 폴더는 막지 않는다. 선택 불가 이유: "자격 증명 파일 포함(.kdbx)". 이름으로 찾은 자격 증명 폴더(`.ssh` 등)도 같은 경계를 쓴다(위 "자격 증명 보호 경로", 이유 "자격 증명 폴더 포함(.ssh)").
 
 ### 스캔 변경 (`walk.rs`)
 
@@ -257,7 +263,8 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
 - 체크할 수 없는 경우:
   - 보호 대상, `action ≠ quarantine`, 동기화 루트 안, 리파스 포인트 폴더, 보기 전용 볼륨(C: 이외)
   - 자격 증명 보호 경로(자격 증명·브라우저 프로필·`%LOCALAPPDATA%\Packages`·`%APPDATA%\Microsoft\{Protect,Credentials,Crypto}`·`%LOCALAPPDATA%\Microsoft\Credentials`)와 그 하위 전부(Q2, U1), 그리고 이를 품은 상위 폴더(S2)
-  - 자격 증명 파일(`CREDENTIAL_FILES`, D12)을 품은 폴더와 그 상위(규칙 폴더 경계까지)
+  - 자격 증명 파일(`CREDENTIAL_FILES`, D12)이나 이름으로 찾은 자격 증명 폴더(`.ssh` 등, 사용자 2026-11-12)를 품은 폴더와 그 상위(규칙 폴더 경계까지)
+  - **하위 폴더를 읽지 못한 폴더와 그 상위**(사용자 2026-11-12, D11·D13과 같은 원칙): 스캔 중 목록이나 속성을 읽지 못한 폴더가 하나라도 있으면(`read_dir` 실패, 항목 속성 읽기 실패, 깊이 512 초과로 건너뜀), 그 폴더 자신과 모든 상위 폴더가 `Contains(Unreadable)`이다. 규칙 폴더 경계를 넘어서도 올린다(무엇이 숨었는지 모르므로). 이유 툴팁: "하위 폴더를 읽지 못해 안전 확인 불가". M4 격리 직전 `check_item`이 같은 폴더를 같은 이유로 거부하므로, 선택 단계에서 미리 막아 격리 단계에서야 거부를 만나지 않게 한다. Temp 구성원은 보호 대상을 품은 항목처럼 가상 행에서 빠져 모음 행으로 간다(D23과 같은 처리).
   - `%LOCALAPPDATA%\Programs` 하위(설치된 앱, `uninstall_app`)
   - 확보량이 "계산 중"이거나 "취소됨"(D13)
   - **동기화 루트 감지 소스가 전부 실패한 스캔의 사용자 폴더 안 노드**(U8, eng 리뷰 D11). 확보량을 계산할 수 없어서(M2 D14) D13과 같은 원칙으로 막는다. `toggle_select`·`toggle_group`·계산 작업 모두 거부하고, 이유 툴팁은 "동기화 폴더 감지 실패". 표 위 안내 줄(M2 동기화 감지 경고와 같은 자리·모양): "동기화 폴더 위치를 확인하지 못해 사용자 폴더 정리를 막았습니다. 감지 기록: %LOCALAPPDATA%\ClearCache\logs\scan.log". 일부만 실패했거나 사용자 폴더 밖이면 막지 않는다(M2 경고 줄 그대로). 감지 방법별 실패 이유는 M2가 이미 `scan.log`에 `sync=[소스=ERR(이유) ...]`로 남기고(`scan/mod.rs:435-443`) M3는 이를 유지한다. M4는 격리 직전에 감지를 다시 하고 여전히 전부 실패면 거부한다.
@@ -274,8 +281,9 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
     - **"대기 중 (N번째)"**(eng 리뷰 D5): 대기열에서 기다리는 항목에 순번을 보여준다. 사용자가 체크한 행은 돌기 옆(크기 칸 "대기 중 (3번째)")과 공용 툴팁에, 기본 체크 대상은 돌기가 없으므로(2A) 크기 칸 툴팁에만 보인다. 실행 중이면 "확보량 계산 중"이다. 순번은 Rust가 대기열이 바뀔 때마다 `ScanEvent`(세대 포함)로 보낸다.
   - **읽기 실패(eng 리뷰 D16)**:
     - 계산 범위 루트를 읽지 못하면(스캔 뒤 지워짐, 권한 바뀜) 계산 상태가 "실패"다. 선택되지 않고(D13에 "실패" 추가), 크기 칸은 "확보량 계산 실패: 폴더가 사라졌거나 읽을 수 없음"이다. 다시 누르면 대기열 1단계로 다시 계산한다.
-    - 하위 폴더를 읽지 못해 계산이 못 본 바이트는 빼지 않는다. 스캔 시점 크기(`tree_bytes`)에서 계산이 목록 정보로 본 파일 크기 합(순회와 같은 규칙: 클라우드 전용 파일 제외)을 뺀 나머지 `max(0, …)`를 `unverified_bytes`(미검증, 최대치)에 더한다. 하위 폴더 크기를 따로 보관하지 않는다. 스캔 뒤 지워진 파일도 이 나머지에 섞일 수 있으나 "최대치" 라벨대로 위쪽으로만 틀린다.
-    - 스캔 때도 못 읽은 폴더는 크기를 모른다. 순회가 센 `skipped_descendants`로 크기 칸 둘째 줄에 "폴더 N개 크기 모름"을 보여주고, 선택 바에 "일부 폴더 크기 모름"을 덧붙인다. 선택은 된다.
+    - **계산 중 하위 폴더를 읽지 못하면**(스캔 때는 읽혔고 그 뒤 권한이 바뀜) 그 항목은 선택되지 않는다. 계산 상태는 "실패"와 같은 자리에 두되 이유는 "하위 폴더를 읽지 못해 안전 확인 불가"이고, 다시 누르면 대기열 1단계로 다시 계산한다(사용자 2026-11-12. M4 `check_item`이 같은 폴더를 거부하므로 D13처럼 선택 단계에서 막는다. 아래 R13의 변경 기록).
+    - 하위 폴더를 모두 읽었는데 목록 크기 합이 스캔 시점 크기(`tree_bytes`)보다 작으면(스캔 뒤 지워진 파일) 그 나머지 `max(0, …)`를 `unverified_bytes`(미검증, 최대치)에 더한다. 순회와 같은 규칙으로 센다(클라우드 전용 파일 제외). 하위 폴더 크기를 따로 보관하지 않는다. "최대치" 라벨대로 위쪽으로만 틀린다.
+    - 스캔 때도 못 읽은 폴더는 크기를 모른다. 순회가 센 `skipped_descendants`로 크기 칸 둘째 줄에 "폴더 N개 크기 모름"을 보여준다. 그 폴더를 품은 노드는 위 "체크할 수 없는 경우"대로 **선택할 수 없다**(이유 "하위 폴더를 읽지 못해 안전 확인 불가", 사용자 2026-11-12). 선택 바의 "일부 폴더 크기 모름"은 선택된 항목에 그런 폴더가 있을 수 없으므로 두지 않는다.
   - **노드 하나의 선택·계산 상태**(eng 리뷰 D4·D5·D7·D11·D16을 모은 그림, Rust `selection.rs`가 가진다):
 
 ```
@@ -285,8 +293,9 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
   └──────────┘  └ 통과 ─┬─ 확보량 있음(M2 허용 목록 Done) ───────────────▶ 선택됨
        ▲                ├─ M2 허용 목록 Pending ─▶ M2 결과 기다림 ──────────▶ 선택됨
        │                └─ 확보량 없음 ─▶ 대기 중(N번째) ─▶ 계산 중 ─┬─ 끝남 ───────▶ 선택됨
-       │                                   │                       │  (미검증·크기 모름 표시, D16)
+       │                                   │                       │  (미검증 표시, D16)
        │      다시 누름 / 부모 체크 / 새 스캔│                       ├─ 루트 읽기 실패 ▶ 실패(다시 누르면 대기열 1단계)
+       │                                   │                       ├─ 하위 폴더 읽기 실패 ▶ 실패("안전 확인 불가", 다시 누르면 대기열 1단계)
        ├───────────────────────────────────┴───────────────────────┴─ 취소 ──────▶ 취소됨(다시 누르면 다시 계산)
        └──────────────────────────── 선택됨에서 다시 누름 ◀── 선택됨
   대기열 순서(D7·D21): 개별 체크 → 합계 디스크 재계산("합계 계산 중") → 묶음 구성원(파일 수 적은 순) → 자동 체크(파일 수 적은 순). 작업자 1개(D5).
@@ -471,6 +480,8 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
 - **S2**: 하위에 가짜 동기화 루트, `.vhdx`, 격리함 이름 폴더, 시스템 보호 경로, 자격 증명 보호 경로(예: 가짜 `Google\Chrome\User Data`, `%APPDATA%\Microsoft\Protect`, `%LOCALAPPDATA%\Microsoft\Credentials`)가 있는 폴더는 선택 불가다. 1 GiB 기준 아래에 숨은 경우도 포함한다. 예: 가짜 `%LOCALAPPDATA%\Google`은 규칙이 없어도("모름") 선택이 거부된다.
 - **S7·S9·S11**: 동기화 루트 안 노드, 정션 폴더, `.vhdx`를 품은 폴더는 선택 불가다.
 - **자격 증명 파일(U9, D12, 표 기반 테스트)**: 목록의 항목마다(`.kdbx`, `.kdb`, `.psafe3`, `.ppk`, `.pfx`, `.p12`, `wallet.dat`, 대소문자 바꾼 이름 포함) 1 KB짜리 파일 하나를 `C:\work\proj\secrets\`에 두면 `secrets`, `proj`, `work`가 모두 선택 불가이고 이유가 "자격 증명 파일 포함"이다. 빈 `vault.opvault` 폴더는 그 폴더 자체와 상위가 선택 불가다. 같은 파일을 `C:\work\proj\node_modules\pkg\test\`에 두면 `node_modules`만 선택 불가이고 `proj`는 아니다. `.pem`·`.key`·`.crt`·`.cer`·`.gpg`·`.asc`·`.jks`·`.keystore`는 폴더를 막지 않는다. `.pst` 1 KB는 막지 않고, `.pst` 합 1 GB(희소 파일 픽스처)는 사용자 데이터 고정 + 강한 모달이다.
+- **이름으로 찾은 자격 증명 폴더 경계(사용자 2026-11-12)**: `C:\work\proj\.ssh`는 `proj`·`work`를 막는다. `C:\work\proj\node_modules\pkg\test\.ssh`(옆에 `package.json`)는 그 `node_modules`만 막고 `proj`는 막지 않으며, 같은 묶음의 다른 `node_modules`도 선택된다. `.aws`·`.gnupg`·`.azure`·`.kube`도 같다(대소문자 바꾼 이름 포함). `Packages\<앱>\LocalState\.ssh`처럼 위치로 찾은 경로 안이면 끝까지 올린다. 같은 경계를 `check_item`도 쓴다(`StopFolders`, T1에서 테스트).
+- **하위 폴더 읽기 실패(사용자 2026-11-12)**: ACL로 막힌 하위 폴더(1 GiB 기준 아래 포함)를 품은 폴더와 그 상위는 선택 불가이고 이유는 "하위 폴더를 읽지 못해 안전 확인 불가"다. `node_modules` 안에서 막혀도 프로젝트까지 막힌다. 같은 픽스처에서 `check_item`도 `Contains(Unreadable)`로 거부한다(선택 단계와 격리 단계의 판정이 같음).
 - **감지 전부 실패(U8, D11)**: `SyncRootDetection`을 주입해 모든 소스가 실패하면 사용자 폴더 안 노드(예: `AppData\Local\npm-cache` 픽스처)의 `toggle_select`·`toggle_group`이 "동기화 폴더 감지 실패" 이유로 거부되고, 계산 작업이 만들어지지 않으며, 안내 줄 플래그가 선다. 사용자 폴더 밖 노드는 선택된다. 한 소스만 실패하면 선택된다. 로그 한 줄에 모든 소스의 `ERR(이유)`가 들어 있다. `append_scan_log`(`scan/mod.rs:422`)에서 줄을 만드는 부분을 순수 함수 `scan_log_line(&ScanSummary) -> String`으로 떼어 그 함수를 테스트한다(테스트가 `LOCALAPPDATA`를 바꾸지 않게).
 - **S3·S12 판정 함수**: 스캔 뒤 폴더를 정션으로 바꾸거나 동기화 루트를 추가하면 `check_item`이 이유와 함께 거부한다(M4가 이 함수를 그대로 쓴다).
 - **선택 정책**: 기본 체크는 규칙 "안전"만이다. 부모를 체크하면 자식은 비활성화된다. "계산 중/취소됨"은 선택이 거부되고 합계에서 빠진다(D13). 돌기 상태에서 다시 누르면 계산이 취소되고 선택되지 않는다. "취소됨" 폴더를 다시 누르면 계산이 다시 시작된다. 기본 체크 대상은 스캔 직후 계산이 시작되고, 끝나면 체크 상태가 된다(2A). 자격 증명 폴더와 `Packages` 하위(`LocalCache`, `TempState` 포함)는 규칙이 "안전"으로 걸려도 선택 불가다(Q2, U1).
@@ -502,8 +513,9 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
 - **일부 미검증(R2-4/Q3)**: 열기 실패를 주입하면 `unverified_bytes`가 따로 잡히고, 합계의 "최대치" 칸으로 간다.
 - **계산 중 읽기 실패(D16)**, 세 경우를 나눈다:
   - 스캔 뒤 계산 전에 루트 폴더를 지우면 계산 상태가 "실패"이고 선택되지 않으며 합계에 들어가지 않는다. 폴더를 다시 만들고 누르면 다시 계산되어 선택된다.
-  - 스캔 때는 읽혔고 계산 직전에 ACL로 읽기를 막은 하위 폴더: 그 폴더의 스캔 시점 바이트가 `unverified_bytes`에 들어가고 `exclusive_bytes`에는 없다. "크기 모름"은 0개다.
-  - 스캔 전부터 ACL로 막힌 하위 폴더: "폴더 1개 크기 모름"이고 `unverified_bytes`는 그 폴더 때문에 늘지 않는다.
+  - 스캔 때는 읽혔고 계산 직전에 ACL로 읽기를 막은 하위 폴더: 계산 상태가 "실패"(이유 "하위 폴더를 읽지 못해 안전 확인 불가")이고 선택되지 않으며 합계에 들어가지 않는다. ACL을 되돌리고 다시 누르면 다시 계산되어 선택된다. 같은 폴더에 `check_item`도 `Contains(Unreadable)`로 거부한다(사용자 2026-11-12).
+  - 스캔 전부터 ACL로 막힌 하위 폴더: "폴더 1개 크기 모름"이고, 그 폴더를 품은 노드와 모든 상위는 `toggle_select`·`toggle_group`이 "하위 폴더를 읽지 못해 안전 확인 불가"로 거부하며 계산 작업이 만들어지지 않는다. 규칙 폴더(`node_modules`) 안에서 못 읽어도 프로젝트 폴더까지 막힌다(경계에서 멈추지 않음).
+  - 스캔 뒤 하위 폴더의 파일이 지워져 목록 합이 `tree_bytes`보다 작으면 그 차이가 `unverified_bytes`에 들어간다.
   - 스캔 뒤 파일이 추가돼 목록 합이 `tree_bytes`보다 크면 나머지는 0이다(음수 없음).
 - **"최대치(미검증)" 툴팁(D22, Vitest)**: 선택할 수 있고 계산하지 않은 노드는 툴팁에 "체크하면 실제 확보량을 계산합니다"가 있고, 선택 불가 노드와 M3a 읽기 전용 화면에는 없다.
 - **화면 로직(Vitest)**: 등급 배지 매핑, 선택 불가 이유 문구, 선택 바 문구(확정 + 최대치, 미검증 0이면 한 줄, 선택 0개, 계산 중 N개, 보기 전용, 미리 고른 N개 안내), 요약 띠 숫자(바이트 배정 규칙, 0 GB 칸 비활성, 툴팁 정확한 바이트), 묶음 없음일 때 구역 숨김, 묶음 행 정렬, "판정" 열 등급순 정렬(형제끼리, 보호됨은 맨 뒤, 다시 누르면 크기순).
@@ -519,6 +531,48 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
 4-2. (M3b) pnpm 프로젝트 10개 픽스처(eng 리뷰 D21): `pnpm install`로 같은 저장소를 쓰는 프로젝트 10개를 TestZone에 만들고, 모든 `node_modules`를 고른 뒤 보관 키 수·최대 작업 메모리·저장소를 함께 골랐을 때 합계 재계산 시간을 기록한다. 보관 키 상한(200만)이 맞는지 이 값으로 다시 본다.
 5. 색 토큰화(5B) 전후로 M2 화면(대상 선택, 진행률, 결과 표, 푸터, 동기화 경고)의 겉모습이 같은지 같은 스캔 결과로 나란히 비교한다. 배지 4개와 칩 3종의 실제 계산된 글자색·바탕색(WebView2 개발자 도구)으로 대비를 다시 재서, 모두 4.5:1 이상인지 확인한다(4A). 다크 모드 색은 앱에 다크 모드가 들어온 뒤에 잰다.
 6. 사용자에게 화면 확인을 부탁하고, 끝나면 커밋·push 여부를 묻는다.
+
+## 남은 할 일
+
+### 검증 4-1 측정 기록
+
+- **픽스처**: `python scripts/bench/make_node_modules_fixture.py --projects 3000` → `C:\ClearCache_TestZone\bench-node-modules-3000`. 프로젝트 3,000개(`projects\gXX\pYYY`, 100개씩 30묶음), 각각 `package.json`, `src\index.js`, `node_modules`(패키지 5개, 그중 하나에 중첩 `node_modules`). 파일 39,000개, 폴더 30,032개, 약 45 MB.
+- **측정**: `powershell -File scripts/bench/measure_scan.ps1 -Exe <scan.exe> -Fixture <픽스처>`. `USERPROFILE`을 픽스처로 바꿔 `user_home` 대상을 스캔한다(`--json`). 최대 작업 메모리는 끝난 프로세스 핸들의 `GetProcessMemoryInfo` PeakWorkingSetSize, JSON 크기는 예제 출력(들여쓰기)과 압축형 둘 다, 순회 시간은 요약 줄의 `walk=`. 첫 실행은 캐시 데우기로 빼고 3회.
+- **M2 기준선(T3, 2026-11-12)**: 커밋 `32e1962`, release 빌드, 같은 PC(소유자 PC).
+
+| 항목 | 1회 | 2회 | 3회 | 기준값 |
+| --- | --- | --- | --- | --- |
+| 노드 수 | 1 | 1 | 1 | 1 (모두 1 GiB 미만이라 루트만 남음) |
+| 순회 시간 | 467 ms | 464 ms | 455 ms | 464 ms (중앙값) |
+| 최대 작업 메모리 | 10.7 MiB | 10.7 MiB | 10.6 MiB | 10.7 MiB |
+| 결과 JSON | 1.7 KiB (압축 1.1 KiB) | 같음 | 같음 | 1.7 KiB |
+
+- **M3 측정(T8에서)**: 같은 픽스처·같은 스크립트로 잰다. 재검토 기준(D14): JSON > 10 MB, 메모리 > 기준 + 200 MB(= 210.7 MiB), 순회 > 기준 + 20%(= 557 ms), 3,000개 묶음 펼치기 렌더링 ≥ 0.5초. 이 픽스처에서는 `node_modules` 3,000개가 묶음 구성원 노드로 남고(중첩 `node_modules`는 멈춘 폴더 아래라 노드가 아님), 그 조상(`projects`, `gXX`, `pYYY`)은 묶음 전용이면 정리 단계에서 지워진다(D3).
+
+## 보안 감사 반영 (2026-11-12)
+
+감사 13건(보안 감사 세션의 최종 보고, PoC 소스 `poc.rs`는 그 세션의 스크래치패드)을 사용자 지시대로 반영했다. 위협 모델은 "사용자 실수 방지"이고 "로컬 쓰기 권한이 있는 공격자 방어"는 아니다(SPEC v1.9 안전 규칙 앞머리). 처음 반영 때는 보고서 원본 없이 지시만으로 재현 테스트를 만들었고, 그 뒤 원본 보고서와 PoC(p1~p7)로 대조해 빠진 사례를 더했다(33개). 테스트 이름은 `audit_<번호>_…`이고 대부분 `src-tauri/src/core/audit_tests.rs`에 있다.
+
+| 감사(심각도) | 보고 내용 | 바꾼 것 | 재현 테스트 |
+| --- | --- | --- | --- |
+| 1(높음) | 끝에 점·공백이 붙은 쌍둥이 폴더(`evil.` 옆에 `evil`)를 일반 경로로 읽으면 `evil`을 두 번 읽어 안의 `.kdbx`·`.vhdx`·`.ssh`를 놓침. 항목 자체가 `cache.`이어도 같음 | 모든 디렉터리 읽기·파일 열기를 `paths::verbatim`(`\\?\`)으로. M2 `walk.rs`·`accounting.rs`도 같은 문제라 같이 고침(`paths::long_path`는 없앰) | `audit_01_check_item_reads_odd_names`(p1a·p1c, `.kdbx`·`.vhdx`), `audit_01_lone_odd_folder_is_read`(p1b·p1d), `audit_01_deep_twin_hiding_ssh`(p1f), `audit_01_item_that_is_the_odd_twin`(p1g), `audit_01_check_item_reads_past_max_path`, `scan::tests::audit_01_scan_reads_odd_names_through_verbatim_paths`(옛 코드에서 실패 확인: 5000이 아니라 2000바이트), `audit_01_scan_reads_past_max_path`(Rust 표준 라이브러리가 긴 경로에 `\\?\`를 붙여 옛 코드에서도 통과, 회귀 방지용) |
+| 2(A 높음, B 중간) | A: 사용자 규칙 `**\backup`(안전)이 그 안의 `.kdbx`·`.ssh` 전파를 끔. B: `Cargo.toml`이 폴더여도 `target`이 규칙 폴더가 되어 `.aws`·`.kdbx`·`.ppk`를 가림 | 자격 증명 경계는 내장 규칙만(`Stop::Bounded`), 사용자 규칙은 멈춤만(`Stop::Walk`). `sibling_exists`는 파일만 | `audit_02_user_backup_rule_as_reported`(p2b), `audit_02_user_rule_does_not_bound_credentials`, `audit_02_cargo_toml_folder_does_not_make_target_a_rule_folder`(p2a), `audit_02_sibling_condition_needs_a_file` |
+| 3(중간) | A: 레지스트리 둘 실패 + env `Ok(0)`이면 `all_failed=false`. B: `USERPROFILE`이 없거나 `..`가 들면 차단이 안 됨. C: `C:\od\.\root`, `\\?\Volume{…}\od`, 없는 8.3 경로로 등록된 루트가 조용히 빠짐 | 비권위 소스(env)의 0개는 성공 아님. 루트는 Windows식으로 해석(`paths::resolve`: `GetFullPathNameW`, 볼륨 GUID → 드라이브 문자)한 뒤 비교하고, 해석할 수 없으면 그 소스 실패. `REG_EXPAND_SZ` 펼침, 레지스트리 값을 조용히 거르지 않음. 쓸 수 있는 사용자 폴더가 없으면 전부 막음(`ProtectContext::sync_unverified`, M2 계산 `scan/mod.rs`) | `audit_03_unset_env_vars_are_not_a_success`(A), `audit_03_missing_user_profile_refuses`·`audit_03_user_profile_with_dotdot_refuses`(B), `audit_03_resolvable_roots_still_protect`·`audit_03_unparsable_root_fails_its_source`(C), `scan::tests::audit_03_scan_without_user_folder_skips_accounting` |
+| 4(중간) | 검사와 rename 사이에 상위를 정션으로 바꿔치기 | M4 요구사항(위 "다음 단계로 미루는 것 > M4") | — |
+| 5(중간) | `.vscode\extensions`, Discord `app-*\modules`, pnpm·Yarn·Bun 전역, Scoop·`resources\app` 안의 `node_modules`가 "안전" | `node_modules`·`.next`·`target`에 `outside_repo_grade: likely_safe`(`Facts.in_repo`, T4가 채움). 제외 목록에 편집기 확장, 전역 패키지 관리자, Scoop, `resources\app`, Squirrel 설치 앱의 `%LOCALAPPDATA%\<앱>\app-<버전>` | `audit_05_dev_output_outside_a_repo_is_likely_safe`, `audit_05_app_locations_are_excluded`(p3 경로 전부) |
+| 6(중간) | `%APPDATA%\gnupg`, `Microsoft\Vault`, 브라우저 베타·Brave·Whale·Opera, Thunderbird, `.config\gcloud`, `.docker`, Bitwarden, 1Password | 목록 추가(SPEC v1.9) | `audit_06_more_browser_and_app_profiles`(p4 경로) |
+| 7(중간~낮음) | `.avhdx`·`.vdi`·`.qcow2`·`.vhds` | 가상 디스크 확장자 추가 | `audit_07_more_virtual_disks` |
+| 8(낮음) | `Boot`, `EFI`, `Config.Msi`, `Windows.old.000`, `$WINDOWS.~BT`(없으면 `Unresolved`) | 루트 시스템 폴더 추가, `Windows.old.*`는 `official_tool`, 8.3 모양일 때만 긴 이름 조회 | `audit_08_more_root_folders` |
+| 9(낮음) | `db.kdbx.`, `wallet.dat `, `ext4.vhdx.`만 든 폴더가 통과. `passwords.kdbx.bak`도 안 걸림 | `file_protection`이 이름 끝의 점·공백을 떼고(Win32가 여는 이름), 백업 접미사(`.bak`·`.old`·`.orig`·`.backup`·`.tmp`) 하나를 벗긴 이름도 맞춤 | `audit_09_file_name_variants`, `audit_09_check_item_finds_odd_file_names`(p1e) |
+| 10(낮음) | 디스크의 `ΝΙΚΟΣ`를 NTFS는 `νικοσ`로 여는데 `to_lowercase`는 끝 시그마를 `ς`로 바꿔 불일치 | 이름 비교를 `CompareStringOrdinal`(대소문자 무시)로, 해시 키는 `LCMapStringEx` 불변 대문자. `CanonPath`는 대소문자를 보존하고 비교만 바꿈. M2 `paths`·`policy`도 같이 | `audit_10_greek_final_sigma_matches_like_ntfs`(p6, 디스크에서 확인), `audit_10_lookalike_names_stay_distinct`(보고서의 "막혀 있음": ſ·ı·켈빈), `paths::tests::audit_10_names_compare_like_ntfs`(반대 방향: ß/ẞ, 켈빈·옴 기호, ǅ/ǆ는 `to_lowercase`로 같지만 NTFS로 다름), `audit_10_protection_does_not_merge_distinct_names` |
+| 11(낮음) | Hugging Face 규칙이 로그인 `token`을 품음 | 규칙을 `.cache\huggingface\hub`로 | `audit_11_hugging_face_token_is_not_in_the_rule` |
+| 12(현재 도달 불가) | subst(`X:\System32`)·`\\localhost\C$\…` 별칭 경로가 보호되지 않음 | 지금은 `targets.rs`가 subst·네트워크 드라이브를 빼고 UI가 id만 보냄. M4 요구사항(커맨드는 경로를 받지 않음) | 기존 `targets_drop_unreadable_volume_and_subst` |
+| 13(낮음) | `SystemRoot`가 없으면 `D:\WINNT` 같은 설치 위치가 보호되지 않음. 다른 관리자로 승격 실행하면 개인 폴더·OneDrive가 그 관리자 것으로 잡힘 | Windows 폴더를 `GetWindowsDirectoryW`로(`ProtectContext::from_system`, `ScanConfig::for_target`). 승격 실행은 M4 요구사항(관리자 권한으로 실행하지 않음) | `paths::tests::audit_13_windows_dir_comes_from_the_os`, `protect::tests::audit_13_system_root_ignores_the_environment`, `scan::tests::audit_13_scan_config_system_root_from_the_os` |
+
+- 보고서의 "막혀 있음을 확인한 것"도 회귀 테스트로 옮겼다. ſ·ı·켈빈 이름은 `audit_10_lookalike_names_stay_distinct`, 없는 경로의 `~`(S12 복원에서 `~cache` 같은 이름이 늘 거부되던 것)는 `audit_tilde_in_missing_path_is_compared_as_written`이다. 쌍둥이 없는 `evil.`, 끝 공백 폴더, `..`, 스트림 문법, 장치 경로, 없는 8.3 이름은 기존 `protect` 테스트와 `audit_01_lone_odd_folder_is_read`가 지킨다.
+- PoC p4가 출력만 하고 보고서가 판정하지 않은 파일 이름(`default_wallet`, `key4.db`, `logins.json`, `.git-credentials`, `vault.1pux`, `export.agilekeychain`)은 자격 증명 파일 목록(D12)에 넣지 않았다. 넣을지는 사용자가 정한다.
+- 같이 고친 것: 8.3 긴 이름 조회는 8.3 모양 구성요소(`이름~숫자`, 8.3 길이)에만 한다(`looks_short`). 전에는 `~`가 든 이름이면 다 조회해서, 없는 `$WINDOWS.~BT` 같은 경로가 "시스템"이 아니라 "확인 불가"로 판정됐다.
+- 규칙 파일 버전을 2로 올렸다(`outside_repo_grade`, Hugging Face 패턴). `outside_repo_grade`는 원래 등급보다 조심스럽고 멈춤 여부가 같아야 한다(스키마 검사).
 
 ## 우려 사항 대응표
 
@@ -608,18 +662,21 @@ eng 리뷰(2026-10-30)의 결정과 Outside Voice 10번(빠진 작업·순서)�
 
 ### M3a — 판정 보기(읽기 전용)
 
-- [ ] **T0 (P1, human: ~30분 / CC: ~5분)** — 라이선스 표기 정리(Q5: MIT). `Cargo.toml`·`package.json`에 `license = "MIT"`, 설계 문서·m2 계획의 "임시" 문구 정리. **이 작업이 끝나기 전에는 `rules.json`을 쓰지 않는다.**
+- [x] **T0 (P1, human: ~30분 / CC: ~5분)** — 라이선스 표기 정리(Q5: MIT). `Cargo.toml`·`package.json`에 `license = "MIT"`, 설계 문서·m2 계획의 "임시" 문구 정리. **이 작업이 끝나기 전에는 `rules.json`을 쓰지 않는다.**
   - Verify: `git grep -n "임시" docs/` 결과에 라이선스 관련 줄 없음
-- [ ] **T1 (P1, human: ~1.5일 / CC: ~30분)** — `protect.rs`: 경로 정규화(8.3 포함, 실패 시 보호 쪽), 보호 경로, 루트 보호, 자격 증명 보호 경로와 `CREDENTIAL_FILES`(D12), `Self_`/`Contains` 구분(D13), S2·S7·S9·S11 판정, `check_item`
+- [x] **T1 (P1, human: ~1.5일 / CC: ~30분)** — `protect.rs`: 경로 정규화(8.3 포함, 실패 시 보호 쪽), 보호 경로, 루트 보호, 자격 증명 보호 경로와 `CREDENTIAL_FILES`(D12), `Self_`/`Contains` 구분(D13), S2·S7·S9·S11 판정, `check_item`
   - Surfaced by: Section 1, D12·D13
   - Files: `src-tauri/src/core/protect.rs`
   - Verify: `cargo test protect` (대소문자·끝 `\`·`\\?\`·8.3, 자격 증명 파일 표 테스트)
-- [ ] **T2 (P1, human: ~1.5일 / CC: ~30분)** — 규칙: `rules.json`(초기 규칙), `source.rs`(`RuleSource` + `BuiltinRules`, D1·D2), `pattern.rs`(`when`·`not_inside`·앱 설치 위치 제외), `mod.rs`(판정 우선순위와 구체성 D8, 멈춤 등급 D9, `category`와 칸 순서 D15·Outside Voice 2번)
+  - 구현 메모(2026-10-30, 계획에 없던 판단): 시스템 폴더 이름은 스캔 종류와 관계없이 모든 드라이브 루트에서 보호한다. `.ssh` 등 자격 증명 폴더는 위치와 관계없이 이름으로, 브라우저 프로필과 `AppData\...` 저장소는 경로 구성요소 연속(어느 프로필이든)과 환경 변수 기준(옮긴 `AppData`) 둘 다로 맞춘다. 정규화는 끝의 점·공백을 Win32처럼 떼고, `..`·`.`·스트림 문법(`::$DATA`)·상대 경로·`\\.\` 장치 경로는 `Unresolved`(보호)다. `.vhdx`를 직접 품은 폴더는 `Self_(VirtualDisk)`, 그 위는 `Contains`다. `check_item`은 하위 트리를 목록만 읽어(링크는 따라가지 않음) 보호 대상을 다시 찾고, 위쪽 경로에 링크가 끼어 있거나, 동기화 루트 밖에서 클라우드 속성이 보이거나, 하위 폴더를 읽지 못하면 거부한다.
+  - 조정(사용자 2026-11-12): `.ssh` 등 이름으로 찾은 자격 증명 폴더는 `Reason::CredentialDir`로 나눠 자격 증명 파일과 같은 규칙 폴더 경계에서 멈춘다(`Reason::stops_at_rule_folder`). 하위 폴더 읽기 실패는 `Reason::Unreadable`(경계를 넘어 끝까지 올림)이고 M3 선택 단계에서도 막는다(T4 전파, T10·T11 계산·선택). `check_item`은 `StopFolders`(T2의 규칙이 구현)를 받아 스캔과 같은 자리에서 경계를 긋고, Temp 구성원처럼 규칙 매칭이 없던 자리의 항목은 `ItemSnapshot.below_stop_folder`로 경계 없이 검사한다. 그래서 스캔이 고를 수 있게 둔 폴더를 `check_item`이 거부하지 않는다(스캔 뒤 바뀐 경우만 거부).
+- [x] **T2 (P1, human: ~1.5일 / CC: ~30분)** — 규칙: `rules.json`(초기 규칙), `source.rs`(`RuleSource` + `BuiltinRules`, D1·D2), `pattern.rs`(`when`·`not_inside`·앱 설치 위치 제외), `mod.rs`(판정 우선순위와 구체성 D8, 멈춤 등급 D9, `category`와 칸 순서 D15·Outside Voice 2번)
   - Files: `src-tauri/rules/rules.json`, `src-tauri/src/core/rules/{mod,source,pattern}.rs`
   - Verify: `cargo test rules` (스키마·가림 검사, 안전 규칙 > 사용자 규칙, 칸 표 테스트)
-- [ ] **T3 (P1, human: ~1시간 / CC: ~10분)** — M2 기준선 측정(검증 4-1의 M2 쪽). `node_modules` 3,000개 픽스처를 만들고, 이 계획의 코드가 들어가기 전 커밋에서 최대 작업 메모리·결과 JSON 크기·순회 시간을 기록한다. T4를 합치기 전에 끝낸다(Outside Voice 10번)
+  - 구현 메모(2026-11-12, 계획에 없던 판단): (1) `Windows.old`를 `protect.rs` 보호 목록에 넣었다(SPEC 1-1 매핑은 "모두 보호 대상"인데 T1 목록에 없어 "모름"으로 선택될 뻔했다). 선택은 막고 action은 `official_tool`이라 "공식 도구" 칸에 들어가며, 근거 줄은 "설정 > 시스템 > 저장소 > 임시 파일 > 이전 Windows 설치"를 안내한다(사용자 2026-11-12). (2) `%LOCALAPPDATA%\Programs` 폴더 자체에도 `uninstall_app` 규칙을 뒀다(`Programs\*`만 있으면 `Programs`를 통째로 고를 수 있다). (3) 패턴에 `%VAR%\경로\*`(바로 아래 폴더 각각)를 세 번째 형태로 받는다(`Programs\*`에 필요). (4) pnpm 저장소는 M2 허용 목록과 맞춰 세 위치(`pnpm\store`, `pnpm-store`, `%USERPROFILE%\.pnpm-store`)에 규칙을 뒀다. (5) `sibling_exists`는 적힌 이름이 **모두** 있어야 걸린다. (6) Documents·Desktop·Pictures·Videos·Music은 `SHGetKnownFolderPath`(`KF_FLAG_DONT_VERIFY`)로 실제 위치를 찾아 그 폴더 자체를 사용자 데이터로 고정하고, 규칙에 안 걸린 하위도 같은 고정을 받는다(사용자 2026-11-12). 다른 드라이브로 옮긴 폴더도 잡히고, 옮긴 뒤의 옛 이름(`%USERPROFILE%\Documents`)은 고정하지 않는다. 셸이 위치를 돌려주지 못한 폴더만 `%USERPROFILE%\<이름>`으로 대신한다. `ProtectContext::from_system`이 조회하고, 테스트는 `with_personal_folders`로 위치를 넣는다. (7) 판정 순서는 자기 보호 → 폴더 자체 고정 → 자기 규칙 → 상위 고정 → 상위의 멈추지 않는 규칙 → 모름이다. (8) 근거 한 줄(`Verdict.reason`)은 Rust가 만든다(규칙이면 `description`).
+- [x] **T3 (P1, human: ~1시간 / CC: ~10분)** — M2 기준선 측정(검증 4-1의 M2 쪽). `node_modules` 3,000개 픽스처를 만들고, 이 계획의 코드가 들어가기 전 커밋에서 최대 작업 메모리·결과 JSON 크기·순회 시간을 기록한다. T4를 합치기 전에 끝낸다(Outside Voice 10번)
   - Verify: 측정값이 이 계획 "남은 할 일"에 기록됨
-- [ ] **T4 (P1, human: ~1.5일 / CC: ~40분)** — 순회(`walk.rs`): 목록 전체를 읽은 뒤 규칙 매칭(D3), 등급 기준 멈춤(D9), 규칙 노드와 조상 남김, 보호 사실 상향 전파(동기화 루트 목록을 `WalkConfig`에, 자격 증명 파일 경계 D12), `latest_touch`(생성일, D10), 확장자별 정확한 합
+- [ ] **T4 (P1, human: ~1.5일 / CC: ~40분)** — 순회(`walk.rs`): 목록 전체를 읽은 뒤 규칙 매칭(D3), 등급 기준 멈춤(D9), 규칙 노드와 조상 남김, 보호 사실 상향 전파(동기화 루트 목록을 `WalkConfig`에, 자격 증명 파일·폴더 경계 D12와 2026-11-12 조정, `protect::Protection::lifted`), 읽기 실패 전파(`read_dir` 실패·속성 읽기 실패·깊이 초과 → 그 폴더와 상위 `Contains(Unreadable)`, 2026-11-12), `latest_touch`(생성일, D10), 확장자별 정확한 합. 보안 감사(2026-11-12) 반영: 규칙 매칭에 넘기는 형제 목록은 파일 이름만(감사 2번), 자격 증명 경계는 `Rule::stop()`이 `Stop::Bounded`인 내장 규칙 폴더에서만(감사 2번), 노드마다 `Facts.in_repo`(상위에 `.git`, 규칙 폴더 아래의 `.git`은 제외)를 채움(감사 5번), `ProtectContext::sync_unverified`로 D11 차단
   - Files: `src-tauri/src/core/scan/{walk,policy,mod}.rs`
   - Verify: `cargo test scan` (D9 Downloads, 사용자 규칙 멈춤 기준)
 - [ ] **T5 (P1, human: ~2일 / CC: ~45분)** — 정리 단계 `scan/tree.rs`(D3): 묶음, `in_tree`, 묶음 전용 조상 제거와 `parent_id` 재연결, 모음 행(`kind: rest`, "자식" 정의는 Outside Voice 1번), Temp 가상 행 표시(구성원 판정 D10·D23), `tree_bytes`(D6), `category`(D15), 칸별 `blocked_bytes`(D24), M2 회귀 테스트 `m2_regression_rule_free_tree_unchanged`(D17)
@@ -1400,6 +1457,7 @@ State: approved
 Actual answer: A, 사용자 2026-10-30 D16 답: "A로 가되, 확보량 계산 때 못 읽은 하위 폴더가 스캔 때 크기를 잰 폴더라면, 그 크기를 빼지 말고 Q3의 미검증(최대치) 칸에 넣어줘. 스캔 때도 못 읽은 폴더만 "N개 크기 모름"으로 개수 표시. 테스트에 두 경우를 나눠 넣어줘."
 Accepted scope: A열의 루트 처리(루트 `read_dir` 실패 → `failed(이유)`, 선택 안 됨, 크기 칸 "확보량 계산 실패: 폴더가 사라졌거나 읽을 수 없음", 다시 누르면 재시도(대기열 1단계), D13 선택 불가에 실패 추가). 하위 폴더 읽기 실패는 사용자 답대로 바꿈: (1) 스캔 때 잰 바이트는 빼지 않고 Q3의 `unverified_bytes`(미검증, 최대치)에 넣는다. 구현: 계산 범위의 스캔 시점 크기(`tree_bytes`, 여러 루트면 합)에서 이번 계산이 목록 정보로 본 파일 크기 합(순회와 같은 규칙: 클라우드 전용 파일 제외)을 뺀 나머지 `max(0, …)`를 `unverified_bytes`에 더한다(모든 하위 폴더 크기를 보관하지 않음). 스캔 뒤 지워진 파일도 이 나머지에 섞일 수 있으나 "최대치" 라벨대로 위쪽으로만 틀린다. (2) 스캔 때도 못 읽은 폴더 수는 순회가 이미 센 `skipped_descendants`로 크기 칸에 "폴더 N개 크기 모름"을 보여준다(선택은 됨, 선택 바 "일부 폴더 크기 모름"). 테스트를 두 경우로 나눔: 스캔 때 읽혔고 계산 직전 ACL 거부된 하위 폴더 → 그 바이트가 `unverified_bytes`에 있고 `exclusive_bytes`에 없음 / 스캔 전부터 ACL 거부된 하위 폴더 → "크기 모름 1개", `unverified_bytes`에 영향 없음. 루트 삭제 → `failed`, 재시도.
 History: A열의 하위 처리("`unreadable_dirs` 개수, '폴더 N개 읽기 실패(포함 안 됨)'")는 사용자 답으로 대체됐다. 하위 폴더 크기 전체를 보관하는 방식은 폴더 수십만 개 분량의 메모리가 들어 쓰지 않고, 루트 `tree_bytes`와 계산이 본 목록 크기의 차이로 같은 결과를 얻는다(2026-10-30).
+Change (사용자 2026-11-12, T1 검토): M4 `check_item`이 하위 폴더 읽기 실패를 거부하므로, D11·D13 원칙대로 M3 선택 단계에서도 막는다. 위 Accepted scope의 (2) "선택은 됨, 선택 바 '일부 폴더 크기 모름'"은 "그 폴더를 품은 노드와 상위는 선택 불가(이유 '하위 폴더를 읽지 못해 안전 확인 불가'), 선택 바 문구 없음"으로 바뀐다. (1)은 같은 원칙을 계산 시점에 적용해, 계산이 하위 폴더를 읽지 못하면 그 항목을 선택하지 않고 "실패"로 둔다(이유 같음, 다시 누르면 재계산). `tree_bytes`와 목록 합의 차이를 `unverified_bytes`에 넣는 규칙은 하위 폴더를 모두 읽었는데 합이 작은 경우(스캔 뒤 지워진 파일)에만 남는다. 본문 "선택 정책과 합계 > 읽기 실패"와 테스트를 고쳤다.
 
 #### R14: M2 동작 회귀 보호 계약 (Section 3)
 Finding: Section 3 REGRESSION RULE. CRITICAL, confidence 9/10, `walk.rs:282-286`(남기기 규칙 변경, D3), `scan/mod.rs:274-281`(`apply`, D4·D6), `commands.rs:115-124` `commands_second_scan_is_refused_while_busy`, `sortTree.ts:12-18`, reviewer: Claude (plan-eng-review)

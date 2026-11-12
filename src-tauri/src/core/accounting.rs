@@ -248,7 +248,7 @@ fn enumerate(
     if progress.is_cancelled() {
         return Vec::new();
     }
-    let Ok(read) = fs::read_dir(dir) else {
+    let Ok(read) = fs::read_dir(paths::verbatim(dir)) else {
         return Vec::new();
     };
     let mut files = Vec::new();
@@ -318,7 +318,7 @@ mod win {
     }
 
     pub fn open_info(path: &Path) -> Result<FileInfo, String> {
-        let wide = HSTRING::from(crate::core::paths::long_path(path).as_os_str());
+        let wide = HSTRING::from(crate::core::paths::verbatim(path).as_os_str());
         let h = unsafe {
             CreateFileW(
                 &wide,

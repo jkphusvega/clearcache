@@ -3,9 +3,13 @@
 
 pub mod accounting;
 pub mod paths;
+pub mod protect;
+pub mod rules;
 pub mod scan;
 pub mod session;
 pub mod targets;
 
+#[cfg(test)]
+mod audit_tests;
 #[cfg(test)]
 pub(crate) mod testzone;

@@ -1,17 +1,25 @@
 //! Cloud sync roots (OneDrive and SyncRootManager providers), collected once per scan.
 //! Files inside a sync root are never opened by accounting; M4 blocks quarantine there (S7).
 //!
-//! Each source reports how many roots it found or why it failed (D14). A missing key or unset
-//! variable is "found 0", not a failure; failures are access/read errors.
+//! Each source reports how many roots it found or why it failed (D14). A missing key is "found
+//! 0", not a failure; failures are access/read errors and roots that cannot be put in comparison
+//! form. Detection fails closed: a source that cannot vouch for an empty answer (environment
+//! variables are simply unset when OneDrive is absent) does not count as a success.
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 use crate::core::paths;
+use crate::core::protect::CanonPath;
 
 pub trait SyncRootSource: Send + Sync {
     fn name(&self) -> &'static str;
     fn read(&self) -> Result<Vec<PathBuf>, String>;
+    /// "Found 0" from this source means there are none. False for sources whose silence
+    /// proves nothing; they count as a success only when they find something.
+    fn authoritative(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,6 +27,8 @@ pub struct SourceResult {
     pub source: &'static str,
     pub found: usize,
     pub error: Option<String>,
+    /// Counted as a working source for `all_failed`.
+    pub succeeded: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -27,7 +37,8 @@ pub struct SyncRootDetection {
     pub roots: Vec<String>,
     /// At least one source failed → UI warning "동기화 폴더 감지 일부 실패".
     pub partial_failure: bool,
-    /// Every source failed → accounting inside the user folder is skipped ("미검증").
+    /// No source succeeded → accounting inside the user folder is skipped ("미검증") and
+    /// selection there is refused (D11).
     pub all_failed: bool,
     #[serde(skip)]
     root_paths: Vec<PathBuf>,
@@ -37,29 +48,43 @@ impl SyncRootDetection {
     pub fn detect(sources: &[Box<dyn SyncRootSource>]) -> Self {
         let mut det = SyncRootDetection::default();
         for s in sources {
-            match s.read() {
+            let (found, error) = match s.read() {
                 Ok(found) => {
-                    det.sources.push(SourceResult {
-                        source: s.name(),
-                        found: found.len(),
-                        error: None,
-                    });
+                    // Keep every root in the form the walk compares against. One that only
+                    // Windows can resolve (`C:\od\.\root`, `\\?\Volume{…}\od`) is resolved first;
+                    // one that cannot be resolved fails its source instead of disappearing.
+                    let n = found.len();
+                    let mut bad = Vec::new();
                     for p in found {
-                        if !det.root_paths.iter().any(|r| paths::same_path(r, &p)) {
-                            det.root_paths.push(p);
+                        let usable = if CanonPath::new(&p).is_some() {
+                            Some(p.clone())
+                        } else {
+                            paths::resolve(&p).filter(|r| CanonPath::new(r).is_some())
+                        };
+                        match usable {
+                            Some(r) => {
+                                if !det.root_paths.iter().any(|x| paths::same_path(x, &r)) {
+                                    det.root_paths.push(r);
+                                }
+                            }
+                            None => bad.push(p.to_string_lossy().into_owned()),
                         }
                     }
+                    let error = (!bad.is_empty())
+                        .then(|| format!("경로를 확인할 수 없음: {}", bad.join(", ")));
+                    (n, error)
                 }
-                Err(e) => det.sources.push(SourceResult {
-                    source: s.name(),
-                    found: 0,
-                    error: Some(e),
-                }),
-            }
+                Err(e) => (0, Some(e)),
+            };
+            det.sources.push(SourceResult {
+                source: s.name(),
+                found,
+                succeeded: error.is_none() && (s.authoritative() || found > 0),
+                error,
+            });
         }
-        let failed = det.sources.iter().filter(|s| s.error.is_some()).count();
-        det.partial_failure = failed > 0;
-        det.all_failed = !sources.is_empty() && failed == sources.len();
+        det.partial_failure = det.sources.iter().any(|s| s.error.is_some());
+        det.all_failed = !det.sources.iter().any(|s| s.succeeded);
         det.roots = det
             .root_paths
             .iter()
@@ -104,6 +129,9 @@ struct EnvVars;
 impl SyncRootSource for EnvVars {
     fn name(&self) -> &'static str {
         "env"
+    }
+    fn authoritative(&self) -> bool {
+        false
     }
     fn read(&self) -> Result<Vec<PathBuf>, String> {
         Ok(["OneDrive", "OneDriveConsumer", "OneDriveCommercial"]
@@ -206,7 +234,12 @@ mod win {
                             .map(|c| u16::from_le_bytes(*c))
                             .take_while(|&c| c != 0)
                             .collect();
-                        out.push(String::from_utf16_lossy(&wide));
+                        let v = String::from_utf16_lossy(&wide);
+                        out.push(if ty == REG_EXPAND_SZ.0 {
+                            expand(&v)?
+                        } else {
+                            v
+                        });
                     }
                 }
                 ERROR_NO_MORE_ITEMS => break,
@@ -216,8 +249,26 @@ mod win {
         Ok(out)
     }
 
-    fn looks_like_path(s: &str) -> bool {
-        crate::core::paths::drive_letter(std::path::Path::new(s)).is_some()
+    /// `%USERPROFILE%\OneDrive` → the real path. A value that does not expand is an error.
+    fn expand(s: &str) -> Result<String, String> {
+        use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+        let src = HSTRING::from(s);
+        let mut buf = vec![0u16; 1024];
+        loop {
+            let n = unsafe { ExpandEnvironmentStringsW(&src, Some(&mut buf)) } as usize;
+            if n == 0 {
+                return Err(format!("환경 변수를 펼치지 못함: {s}"));
+            }
+            if n <= buf.len() {
+                let out = String::from_utf16_lossy(&buf[..n - 1]);
+                return if out.contains('%') {
+                    Err(format!("환경 변수를 펼치지 못함: {s}"))
+                } else {
+                    Ok(out)
+                };
+            }
+            buf.resize(n, 0);
+        }
     }
 
     /// `HKLM\...\SyncRootManager\<provider>\UserSyncRoots`: value name = SID, data = path.
@@ -234,12 +285,9 @@ mod win {
             let mut found = Vec::new();
             for provider in subkeys(&root)? {
                 if let Some(k) = open(root.0, &format!(r"{provider}\UserSyncRoots"))? {
-                    found.extend(
-                        string_values(&k)?
-                            .into_iter()
-                            .filter(|s| looks_like_path(s))
-                            .map(PathBuf::from),
-                    );
+                    // Every value is a root; one that is not a usable path fails this source
+                    // in `detect` rather than being skipped here.
+                    found.extend(string_values(&k)?.into_iter().map(PathBuf::from));
                 }
             }
             Ok(found)
@@ -276,9 +324,7 @@ mod win {
                     ERROR_SUCCESS => {
                         let s = String::from_utf16_lossy(&buf[..(len as usize / 2)]);
                         let s = s.trim_end_matches('\0');
-                        if looks_like_path(s) {
-                            found.push(PathBuf::from(s));
-                        }
+                        found.push(PathBuf::from(s));
                     }
                     ERROR_FILE_NOT_FOUND => {}
                     e => return Err(format!("{acct}: {}", err(e))),
