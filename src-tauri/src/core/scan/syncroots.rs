@@ -40,8 +40,9 @@ pub struct SyncRootDetection {
     /// No source succeeded → accounting inside the user folder is skipped ("미검증") and
     /// selection there is refused (D11).
     pub all_failed: bool,
+    /// The same roots in comparison form, for `contains`.
     #[serde(skip)]
-    root_paths: Vec<PathBuf>,
+    root_canon: Vec<CanonPath>,
 }
 
 impl SyncRootDetection {
@@ -66,12 +67,18 @@ impl SyncRootDetection {
                             bad.push(p.to_string_lossy().into_owned());
                             continue;
                         };
-                        let stored = canon.to_path_buf();
-                        let target =
-                            paths::final_path(&stored).filter(|t| !paths::same_path(t, &stored));
-                        for r in std::iter::once(stored).chain(target) {
-                            if !det.root_paths.iter().any(|x| paths::same_path(x, &r)) {
-                                det.root_paths.push(r);
+                        // A root that does not exist has nothing to protect behind it; one that
+                        // exists but cannot be followed fails its source (focused review 3).
+                        let target = match paths::final_path(&canon.to_path_buf()) {
+                            Ok(t) => t.and_then(|t| CanonPath::new(&t)),
+                            Err(e) => {
+                                bad.push(format!("{} (링크 대상 확인 실패: {e})", p.display()));
+                                None
+                            }
+                        };
+                        for r in std::iter::once(canon).chain(target) {
+                            if !det.root_canon.contains(&r) {
+                                det.root_canon.push(r);
                             }
                         }
                     }
@@ -91,15 +98,22 @@ impl SyncRootDetection {
         det.partial_failure = det.sources.iter().any(|s| s.error.is_some());
         det.all_failed = !det.sources.iter().any(|s| s.succeeded);
         det.roots = det
-            .root_paths
+            .root_canon
             .iter()
-            .map(|p| p.to_string_lossy().into_owned())
+            .map(|c| c.to_path_buf().to_string_lossy().into_owned())
             .collect();
         det
     }
 
+    /// `path` is a root or inside one, compared the way `ProtectContext` compares (8.3
+    /// expanded, trailing dots and spaces dropped, NTFS case rules), so the scan's marking and
+    /// accounting agree with the protection check (focused review 4). A path that cannot be
+    /// put in that form counts as inside.
     pub fn contains(&self, path: &Path) -> bool {
-        self.root_paths.iter().any(|r| paths::is_within(path, r))
+        match CanonPath::new(path) {
+            Some(c) => self.root_canon.iter().any(|r| c.starts_with(r)),
+            None => !self.root_canon.is_empty(),
+        }
     }
 
     /// For tests and the CLI: a detection with fixed roots and no failures.

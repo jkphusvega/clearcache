@@ -601,3 +601,26 @@ fn audit2_c2_user_folder_with_dotdot_blocks_accounting() {
     assert_eq!(node(&r, "uvcache").accounting, AccountingState::Unverified);
     assert!(plan.scopes.is_empty());
 }
+
+/// Focused review 4 (M2 regression): a sync root whose real name ends in a dot is marked and
+/// kept out of accounting, as it was before the roots were stored in comparison form.
+#[test]
+fn review_4_sync_root_named_with_trailing_dot_is_marked() {
+    use crate::core::testzone::{odd_dir, write_verbatim};
+    let fx = fixture();
+    let root = fx.path();
+    let od = root.join("od").join("root.");
+    odd_dir(&od);
+    write_verbatim(&od.join("doc.bin"), 4 * KIB as usize);
+    let mut c = cfg(root);
+    c.accounting_roots = vec![root.join("od")];
+    let sync = SyncRootDetection::with_roots(vec![od.clone()]);
+    let (r, plan) = walk_phase(&c, &sync, &Progress::default()).unwrap();
+    let n = node(&r, "root.");
+    assert!(n.in_sync_root, "{n:?}");
+    assert_eq!(n.accounting, AccountingState::Unverified);
+    assert!(plan
+        .scopes
+        .iter()
+        .all(|s| s.nodes.iter().all(|(_, p)| !p.ends_with("root."))));
+}

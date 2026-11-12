@@ -142,7 +142,7 @@ impl ScanConfig {
                 system_root: system_root.clone(),
             },
             accounting_roots: default_accounting_roots(system_root.as_deref(), drive),
-            user_home: paths::env_path("USERPROFILE"),
+            user_home: paths::lookup("USERPROFILE"),
             // Only the system drive can be quarantined (same-volume rename); others are view-only.
             read_only_volume: drive != Some(system_drive),
             drive_used_bytes: match (t.kind, t.total_bytes, t.free_bytes) {
@@ -162,12 +162,12 @@ pub fn default_accounting_roots(
     if let Some(sr) = system_root {
         roots.push(sr.join("WinSxS"));
     }
-    if let Some(lad) = paths::env_path("LOCALAPPDATA") {
+    if let Some(lad) = paths::lookup("LOCALAPPDATA") {
         roots.push(lad.join("uv").join("cache"));
         roots.push(lad.join("pnpm").join("store"));
         roots.push(lad.join("pnpm-store"));
     }
-    if let Some(home) = paths::env_path("USERPROFILE") {
+    if let Some(home) = paths::lookup("USERPROFILE") {
         roots.push(home.join(".pnpm-store"));
     }
     if let Some(d) = scan_drive {
@@ -427,8 +427,7 @@ fn plan_accounting(
 /// One line per scan in `%LOCALAPPDATA%\ClearCache\logs\scan.log`.
 pub fn append_scan_log(s: &ScanSummary) {
     use std::io::Write;
-    let Some(dir) = paths::env_path("LOCALAPPDATA").map(|p| p.join("ClearCache").join("logs"))
-    else {
+    let Some(dir) = paths::lookup("LOCALAPPDATA").map(|p| p.join("ClearCache").join("logs")) else {
         return;
     };
     if std::fs::create_dir_all(&dir).is_err() {

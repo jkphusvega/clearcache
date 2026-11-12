@@ -1,4 +1,4 @@
-# AI 디스크 정리 도구 — 바이브코딩 스펙 (v1.10)
+# AI 디스크 정리 도구 — 바이브코딩 스펙 (v1.11)
 
 Sep 25, 2026 · @종경 · 개정 이력은 문서 끝에 있다.
 
@@ -143,7 +143,7 @@ flowchart LR
 - 내장 규칙은 앱에 들어 있는 `rules.json`(버전 번호 포함)이다. **실행할 때마다** 버전을 비교해 SQLite의 내장 규칙을 갱신한다. 사용자가 추가한 규칙은 별도 출처(`source=user`)로 두고 건드리지 않는다.
 - 규칙 = 경로 패턴 + 이름 + 등급 + 설명 + 재생성 방법 + 대상 방식(`folder` 또는 `contents_older_than`).
 - **앱 설치 위치 제외 목록**: `%LOCALAPPDATA%\Packages`, `%LOCALAPPDATA%\Programs`, `%APPDATA%\npm`, `%ProgramFiles%`, `%ProgramFiles(x86)%`(어느 드라이브의 `Program Files`든), 편집기 확장 폴더(`%USERPROFILE%\.vscode`, `.vscode-insiders`, `.vscode-oss`, `.cursor`, `.windsurf`), 전역 패키지 관리자(`%LOCALAPPDATA%\pnpm`, `%LOCALAPPDATA%\Yarn`, `%USERPROFILE%\.bun`), Scoop 앱(`%USERPROFILE%\scoop\apps`, `%SCOOP%\apps`), Squirrel로 설치된 앱의 버전 폴더(`%LOCALAPPDATA%\<앱>\app-<버전>`, Discord·Slack 등), Node 버전 관리자(`%APPDATA%\nvm`, `%APPDATA%\fnm`, `%LOCALAPPDATA%\fnm_multishells`, `%LOCALAPPDATA%\Volta`, 그리고 설정돼 있으면 `%NVM_HOME%`, `%NVM_SYMLINK%`, `%FNM_DIR%`, `%VOLTA_HOME%`), 위치와 관계없이 Electron 앱 번들(`resources\app`, `resources\app.asar.unpacked`), 그리고 `node.exe`가 든 폴더(Node 설치 폴더)와 그 아래 전부.
-  - 제외 목록을 만들 때 꼭 있어야 할 환경 변수(`LOCALAPPDATA`, `APPDATA`, `USERPROFILE`, `ProgramFiles`, `ProgramFiles(x86)`)를 하나라도 풀지 못하면, 목록이 불완전하므로 이름 패턴 규칙은 아무 폴더에도 걸리지 않는다(막는 쪽: 그 폴더들은 "모름"). 도구를 설치했을 때만 있는 변수(`SCOOP`, `NVM_HOME` 등)는 없어도 된다. 규칙의 `not_inside`를 풀지 못하면 그 규칙을 끈다.
+  - 제외 목록의 기준 폴더(`LOCALAPPDATA`, `APPDATA`, `USERPROFILE`, `ProgramFiles`, `ProgramFiles(x86)`)를 하나라도 얻지 못하거나, 설정된 도구 변수(`SCOOP`, `NVM_HOME` 등)의 값을 경로로 해석할 수 없으면, 목록이 불완전하므로 이름 패턴 규칙은 아무 폴더에도 걸리지 않는다(막는 쪽: 그 폴더들은 "모름"). 도구 변수가 아예 없으면 그 도구를 쓰지 않는 것이므로 괜찮다. 규칙의 `not_inside`를 풀지 못하면 그 규칙을 끈다.
   - 어느 깊이든 맞는 이름 패턴(`**\node_modules`, `**\.next`, `**\target` 등)을 쓰는 **모든 규칙**(내장·사용자 규칙 모두)은 이 위치 아래에서 걸리지 않는다. 규칙이 끌 수 없다.
   - 이 아래의 같은 이름 폴더는 개발 산출물이 아니라 설치된 앱의 일부일 수 있기 때문이다(Electron 앱의 `resources\app\node_modules`, 전역 npm 패키지 등).
   - 경로를 직접 지정한 규칙(`%LOCALAPPDATA%\npm-cache` 등)에는 적용하지 않는다.
@@ -248,6 +248,9 @@ API 키는 SQLite에 저장하지 않는다.
   - 목록에서 받은 이름은 바꾸지 않고 그대로(`OsString`) 이어 붙인다. 문자열로 바꾸면 짝 없는 서로게이트가 든 이름이 U+FFFD로 바뀌어 다른 폴더가 열린다. 문자열은 이름을 비교할 때만 쓴다.
   - 이름 비교는 NTFS와 같은 규칙(`CompareStringOrdinal`, 대소문자 무시)으로 한다. `to_lowercase`는 NTFS가 다르게 보는 이름(ß와 ẞ, 켈빈 기호와 k 등)을 같다고 보고, NTFS가 같게 보는 이름(`ΝΙΚΟΣ`와 `νικοσ`)을 다르다고 본다.
   - Windows 폴더 위치는 `%SystemRoot%`가 아니라 `GetSystemWindowsDirectoryW`로 얻는다(터미널 서비스에서도 공용 Windows 폴더).
+  - `LOCALAPPDATA`, `APPDATA`, `USERPROFILE`, `ProgramFiles`, `ProgramFiles(x86)`도 환경 변수가 아니라 셸의 알려진 폴더(`SHGetKnownFolderPath`)로 얻는다. 환경 변수는 프로세스가 물려받은 값이라 틀리거나 오래됐을 수 있다. 규칙 패턴의 `%LOCALAPPDATA%\…` 표기는 그대로 쓰되 값은 셸에서 온다. 환경 변수는 설치 도구가 정하는 위치(`NVM_HOME`, `FNM_DIR`, `VOLTA_HOME`, `SCOOP`, `%OneDrive%` 등)에만 쓴다.
+  - **해석 실패는 버리지 않고 막는 쪽으로 판정한다.** 보호 위치(자격 증명 위치, 개인 폴더, 동기화 루트)를 경로로 해석하지 못하면 사용자 폴더 안의 선택·격리를 막는다("보호 위치를 확인하지 못함"). Windows 폴더를 얻지 못하면 모든 선택·격리를 막는다. 앱 설치 위치 제외 목록을 해석하지 못하면 이름 패턴 규칙을 끈다. 동기화 루트가 있는데 링크 너머 최종 경로를 확인하지 못하면 그 감지 소스를 실패로 기록한다(루트가 아예 없으면 실패가 아님).
+  - 동기화 루트 안인지 판단할 때(스캔 표시, 확보량 계산 제외)도 보호 검사와 같은 정규화 비교(8.3 별칭 펼침, 끝 점·공백 무시, NTFS 대소문자 규칙)를 쓴다.
   - 이름의 기본 부분이 `~숫자`로 끝나는 구성요소(`PROGRA~1`, `인천대~1`)는 길이와 관계없이 긴 이름으로 바꿔 본다. 바꿀 수 없으면 보호 쪽으로 판정한다. `$WINDOWS.~BT`, `~cache`처럼 그 모양이 아닌 `~` 이름은 그대로 비교한다.
   - Tauri 커맨드는 경로 문자열을 받지 않는다(스캔 결과 id와 세대만 받음, "아키텍처 경계").
 
@@ -360,6 +363,12 @@ M4까지만 해도 AI 없이 쓸 수 있는 정리 도구가 된다. AI는 M5에
   - 격리함 화면에 드라이브별 용량을 보여줘야 한다.
 
 ## 개정 이력
+
+**v1.11 (2026-11-13)**: 2차 감사 반영 커밋의 집중 검토(중간 2건, 낮음 2건, 정보 1건)를 반영했다.
+
+- 해석 실패를 조용히 버리던 곳을 모두 막는 쪽으로 바꿨다: 보호 위치 → 사용자 폴더 안 차단, Windows 폴더 → 전체 차단, 제외 목록 → 이름 패턴 규칙 끔, 동기화 루트 최종 경로 → 그 소스 실패.
+- 셸 폴더(`LOCALAPPDATA`·`APPDATA`·`USERPROFILE`·`ProgramFiles`)는 `SHGetKnownFolderPath`로 얻는다. 환경 변수는 설치 도구 위치에만 쓴다.
+- 동기화 루트 포함 여부를 보호 검사와 같은 정규화 비교로 판단한다(끝 점이 붙은 루트의 M2 회귀 수정).
 
 **v1.10 (2026-11-12)**: 2차 보안 감사(새 구멍 9건, 불완전한 수정 2건, 참고 4건)를 반영했다.
 

@@ -189,16 +189,26 @@ impl RuleMatcher {
                 }
             })
             .collect();
-        let resolve = |var: &str, rel: &str| CanonPath::new(&env(var)?.join(rel));
-        let excludes = APP_INSTALL_EXCLUDES
-            .iter()
-            .filter_map(|(var, rel)| resolve(var, rel))
-            .collect();
+        // Every exclusion is resolved or the `**\` rules go off: a required variable that is
+        // missing, or any variable that is set but cannot be put in comparison form
+        // (`"D:\tools\nvm"`, `…\.`, an unexpanded `%X%`), would otherwise leave a hole in the
+        // list (2nd audit B5, focused review 1). Only an unset optional variable is skipped.
+        let mut named_off = false;
+        let mut excludes = Vec::new();
+        for (var, rel) in APP_INSTALL_EXCLUDES {
+            match env(var) {
+                None => named_off |= REQUIRED_VARS.contains(var),
+                Some(p) => match CanonPath::new(&p.join(rel)) {
+                    Some(c) => excludes.push(c),
+                    None => named_off = true,
+                },
+            }
+        }
         Self {
             entries,
             excludes,
-            local_app_data: resolve("LOCALAPPDATA", ""),
-            named_off: REQUIRED_VARS.iter().any(|v| resolve(v, "").is_none()),
+            local_app_data: env("LOCALAPPDATA").and_then(|p| CanonPath::new(&p)),
+            named_off,
         }
     }
 

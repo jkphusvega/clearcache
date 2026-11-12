@@ -106,7 +106,7 @@ pub fn resolve(targets: &[ScanTarget], id: &str) -> Result<ScanTarget, String> {
 }
 
 pub fn list_scan_targets() -> Vec<ScanTarget> {
-    build_targets(paths::env_path("USERPROFILE"), &win::probe_drives())
+    build_targets(paths::lookup("USERPROFILE"), &win::probe_drives())
 }
 
 pub fn resolve_current(id: &str) -> Result<ScanTarget, String> {

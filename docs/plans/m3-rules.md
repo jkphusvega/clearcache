@@ -1,6 +1,6 @@
 # M3 계획 (초안): 규칙 DB + 등급 판정 + 시스템 폴더 보호
 
-> **eng 리뷰 완료(2026-10-30). M3a T0·T1(2026-10-30)·T2·T3(2026-11-12) 완료, 보안 감사 13건과 2차 감사 반영(2026-11-12, "보안 감사 반영"·"2차 보안 감사 반영"), 다음은 T4(순회).** 결정 D1~D24와 Outside Voice 정정은 아래 "Eng 리뷰 (2026-10-30)"에 있고, 작업 순서는 "Implementation Tasks"(M3a T0~T8, M3b T9~T14)를 따른다. 미결 U2~U10은 eng 리뷰에서 정했다(U1, U11, U12는 남음).
+> **eng 리뷰 완료(2026-10-30). M3a T0·T1(2026-10-30)·T2·T3(2026-11-12) 완료, 보안 감사 13건, 2차 감사, 집중 검토 반영(2026-11-12~13, "보안 감사 반영"·"2차 보안 감사 반영"·"집중 검토"), 다음은 T4(순회).** 결정 D1~D24와 Outside Voice 정정은 아래 "Eng 리뷰 (2026-10-30)"에 있고, 작업 순서는 "Implementation Tasks"(M3a T0~T8, M3b T9~T14)를 따른다. 미결 U2~U10은 eng 리뷰에서 정했다(U1, U11, U12는 남음).
 
 > **현재 상태 (2026-10-24): 초안, 범위 질문 Q1~Q5 결정 완료.** 승인 전에 `/plan-design-review`와 `/plan-eng-review`를 거친다. 구현은 시작하지 않았다.
 > - Q1~Q5는 사용자가 결정했다(아래 "결정됨"). 사용자 검토(2026-10-24)의 1~3번은 반영했다(자격 증명 보호 경로의 S2 전파, 모든 `**\` 규칙에 공통 적용하는 앱 설치 위치 제외 목록, 규칙 안 `.git` 비전파). SPEC v1.6에도 반영했다. 4~10번은 미결 U3~U9로 eng 리뷰에서 다룬다.
@@ -44,6 +44,7 @@ SPEC "개발 단계" M3 행을 그대로 따르고, 이 계획의 범위에서 �
     - **검사와 이동 사이의 바꿔치기(감사 4번)**: `check_item`이 통과한 뒤 rename 전에 폴더나 그 상위가 링크로 바뀌면 다른 곳이 옮겨진다. 항목을 `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`로 한 번 열어 핸들을 쥔 채, 볼륨 번호와 파일 ID(`FILE_ID_INFO`)가 스캔 때와 같은지, 리파스 속성이 없는지 확인한다. 이동은 그 핸들로 한다(`SetFileInformationByHandle` + `FILE_RENAME_INFO`, 상위 핸들 기준). 이동 직후 격리함 안의 항목을 다시 열어 파일 ID가 같은지 재확인하고, 다르면 되돌리고 거부를 `action_log`에 남긴다. 상위 경로의 각 구성요소도 핸들로 열어 링크가 아닌지 확인한다(현재 `check_item`의 경로 기반 검사를 대체).
     - **관리자 권한으로 실행하지 않음**: 매니페스트는 `asInvoker`. 시작할 때 토큰이 관리자(`TokenElevation`)면 안내 줄을 띄우고 격리·완전 삭제·복원 커맨드를 거부한다. SPEC 안전 규칙에도 적었다.
     - **커맨드는 경로 문자열을 받지 않음(감사 12번)**: 격리·복원·완전 삭제 커맨드는 스캔 결과 id·격리함 항목 id와 세대만 받는다. 경로는 Rust 세션이 가진 값만 쓴다. 커맨드 인자 타입에 `String` 경로가 없는지 테스트(커맨드 시그니처 표)로 확인한다.
+    - **이동·삭제·복원은 반드시 `paths::verbatim()` 경로로 호출(집중 검토, 사용자 2026-11-13)**: 2차 감사 D1로 저장 경로가 일반 형태가 되었으므로, `MoveFileExW`·`SetFileInformationByHandle`의 대상·`DeleteFileW`·`RemoveDirectoryW`·`CreateFileW` 등 디스크를 바꾸는 모든 호출은 `verbatim()`을 거친다. 일반 경로를 그대로 넘기면 Win32가 끝 점·공백을 떼어(`…\SSH~1.` → `.ssh`의 별칭) 다른 폴더를 바꾼다. 코드 리뷰 항목이자 테스트(끝 점 쌍둥이 폴더를 격리·복원했을 때 쌍둥이가 그대로인지)로 확인한다.
     - **S12 복원 시 `~`가 든 원래 이름**: 8.3 모양 구성요소(`PROGRA~1`)는 원래 위치가 사라지면 긴 이름으로 바꿀 수 없어 `Unresolved`(거부)가 된다. 격리할 때 원래 경로를 `CanonPath`(긴 이름)로 바꿔 `quarantine` 테이블에 기록하고, 복원 검사는 그 기록으로 한다. `$WINDOWS.~BT`처럼 8.3 모양이 아닌 `~` 이름은 그대로 비교한다(M3에서 `looks_short`로 구현).
   - **M4 전 선행 작업: 등록하지 않는 동기화 도구 조사(2차 감사 B2, 사용자 2026-11-12)**. 지금 감지 소스는 SyncRootManager, OneDrive 계정, 환경 변수뿐이다. 여기에 등록하지 않는 도구의 폴더는 "모름"으로 선택할 수 있고, 격리하면 클라우드에서도 지워질 수 있다. 격리를 만들기 전에 조사한다.
     - 대상: 네이버 MYBOX, Google Drive(미러 모드), Dropbox(옛 버전 포함), Synology Drive, Syncthing, MEGA.
@@ -604,6 +605,21 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
 - B2(등록하지 않는 동기화 도구)는 위 "다음 단계로 미루는 것 > M4"의 M4 전 선행 작업으로 넣었다.
 - 2차 감사의 "지난 감사 수정 확인" 표에서 1차 4·12번은 M4 요구사항으로 남고, `commands.rs`가 경로를 받지 않는다는 것을 감사가 확인했다.
 
+## 2차 감사 반영 커밋의 집중 검토 (2026-11-13)
+
+`2f7f2b1`만 대상으로 한 집중 검토(세션 `502dd2b6`의 최종 보고, 코드 판독만) 결과를 사용자 지시대로 반영했다. 새 높은 심각도 구멍은 없었고 중간 2건, 낮음 2건, 정보 1건이다. 테스트 이름은 `review_<번호>_…`이다.
+
+| 항목 | 보고 내용 | 바꾼 것 | 재현 테스트 |
+| --- | --- | --- | --- |
+| 1(중간) | 설정됐지만 해석할 수 없는 도구 변수(`"D:\tools\nvm"`, `…\.`, 펼치지 않은 `%X%`)가 제외 목록에서 조용히 빠져 `**\` 규칙이 켜진 채 남음 | 제외 목록의 변수는 없거나(필수만) 해석 불가(모두)면 `**\` 규칙 전체를 끔. 설치 안 한 도구 변수는 건너뜀 | `review_1_unresolvable_tool_variable_turns_named_rules_off` |
+| 2(중간) | `ProtectContext`가 자격 증명 위치·개인 폴더·동기화 루트의 해석 실패를 `filter_map`으로 버림(`APPDATA=…\Roaming\.`, 재검사 때 읽히지 않는 `Sync~2`) | 버리지 않고 `ProtectContext::unresolved`에 남김. 사용자 폴더 안의 경로는 `Refusal::ProtectionUnresolved`로 거부(선택 단계도 `unresolved_for`를 씀, M3b). Windows 폴더를 얻지 못하면 전체 거부 | `review_2_unresolved_protection_refuses_the_user_folder` |
+| 3(낮음) | `final_path`가 실패하면(버퍼 1024자 고정, 열기 실패) 링크 대상이 소리 없이 빠짐 | 버퍼는 필요한 만큼 키움. `final_path`는 `Ok(None)`(없음)과 `Err`(있는데 따라갈 수 없음)를 나누고, `Err`는 그 소스의 실패. 없는 루트는 실패가 아님(지워진 OneDrive 폴더가 레지스트리에 남는 경우가 흔해서) | `review_3_link_target_failure_fails_the_source`(ACL로 속성 읽기를 막아 재현, 1,200자 넘는 대상 포함) |
+| 4(낮음, M2 회귀) | 저장 루트는 끝 점을 뗀 형태인데 `contains`는 글자 그대로 비교해 `C:\od\root.`가 `in_sync_root`에서 빠지고 계산이 그 안의 파일을 엶 | `SyncRootDetection`이 루트를 `CanonPath`로 들고 `contains`도 같은 정규화 비교(해석 불가 경로는 안쪽으로 봄) | `review_4_contains_matches_like_the_protection_check`, `scan::tests::review_4_sync_root_named_with_trailing_dot_is_marked` |
+| 5(정보) | 틀렸지만 유효한 `LOCALAPPDATA=D:\nowhere`는 B5를 통과 | 셸 폴더 다섯 개와 `SystemRoot`는 `paths::lookup`이 `SHGetKnownFolderPath`·`GetSystemWindowsDirectoryW`로만 얻음(환경 변수로 돌아가지 않음). 환경 변수는 도구 변수에만. `ProtectContext::from_system`, `ScanConfig`, `targets`, 계산 허용 목록, 로그 위치가 이를 씀 | `paths::tests::review_5_lookup_reads_shell_folders_from_the_shell` |
+
+- 조용히 버리던 곳 전체 목록과 처리: `protect.rs`의 개인 폴더·자격 증명 위치·동기화 루트·`from_shell` 개인 폴더·`with_personal_folders`(→ 사용자 폴더 안 차단), `from_shell`의 Windows 폴더(→ 전체 차단), `pattern.rs`의 제외 목록(→ `**\` 끔), `syncroots.rs`의 `final_path`(→ 소스 실패)와 `contains`(→ 정규화 비교). 그대로 둔 것: 설치하지 않은 도구 변수(쓰지 않는 도구), `USERPROFILE` 실패(이미 전체 차단), `best()`의 `CanonPath` 실패(경계가 생기지 않아 막는 쪽), `not_inside`(이미 규칙을 끔), `paths::env_path`의 빈 값(설정 안 됨으로 봄).
+- 보고서 끝의 두 줄은 M4 요구사항(이동·삭제·복원은 `verbatim()`)과 T4 필수 항목(`node.exe` 표지를 `best()`에도)으로 넣었다.
+
 ## 우려 사항 대응표
 
 | 출처 | 내용 | 이 계획에서 |
@@ -706,7 +722,7 @@ eng 리뷰(2026-10-30)의 결정과 Outside Voice 10번(빠진 작업·순서)�
   - 구현 메모(2026-11-12, 계획에 없던 판단): (1) `Windows.old`를 `protect.rs` 보호 목록에 넣었다(SPEC 1-1 매핑은 "모두 보호 대상"인데 T1 목록에 없어 "모름"으로 선택될 뻔했다). 선택은 막고 action은 `official_tool`이라 "공식 도구" 칸에 들어가며, 근거 줄은 "설정 > 시스템 > 저장소 > 임시 파일 > 이전 Windows 설치"를 안내한다(사용자 2026-11-12). (2) `%LOCALAPPDATA%\Programs` 폴더 자체에도 `uninstall_app` 규칙을 뒀다(`Programs\*`만 있으면 `Programs`를 통째로 고를 수 있다). (3) 패턴에 `%VAR%\경로\*`(바로 아래 폴더 각각)를 세 번째 형태로 받는다(`Programs\*`에 필요). (4) pnpm 저장소는 M2 허용 목록과 맞춰 세 위치(`pnpm\store`, `pnpm-store`, `%USERPROFILE%\.pnpm-store`)에 규칙을 뒀다. (5) `sibling_exists`는 적힌 이름이 **모두** 있어야 걸린다. (6) Documents·Desktop·Pictures·Videos·Music은 `SHGetKnownFolderPath`(`KF_FLAG_DONT_VERIFY`)로 실제 위치를 찾아 그 폴더 자체를 사용자 데이터로 고정하고, 규칙에 안 걸린 하위도 같은 고정을 받는다(사용자 2026-11-12). 다른 드라이브로 옮긴 폴더도 잡히고, 옮긴 뒤의 옛 이름(`%USERPROFILE%\Documents`)은 고정하지 않는다. 셸이 위치를 돌려주지 못한 폴더만 `%USERPROFILE%\<이름>`으로 대신한다. `ProtectContext::from_system`이 조회하고, 테스트는 `with_personal_folders`로 위치를 넣는다. (7) 판정 순서는 자기 보호 → 폴더 자체 고정 → 자기 규칙 → 상위 고정 → 상위의 멈추지 않는 규칙 → 모름이다. (8) 근거 한 줄(`Verdict.reason`)은 Rust가 만든다(규칙이면 `description`).
 - [x] **T3 (P1, human: ~1시간 / CC: ~10분)** — M2 기준선 측정(검증 4-1의 M2 쪽). `node_modules` 3,000개 픽스처를 만들고, 이 계획의 코드가 들어가기 전 커밋에서 최대 작업 메모리·결과 JSON 크기·순회 시간을 기록한다. T4를 합치기 전에 끝낸다(Outside Voice 10번)
   - Verify: 측정값이 이 계획 "남은 할 일"에 기록됨
-- [ ] **T4 (P1, human: ~1.5일 / CC: ~40분)** — 순회(`walk.rs`): 목록 전체를 읽은 뒤 규칙 매칭(D3), 등급 기준 멈춤(D9), 규칙 노드와 조상 남김, 보호 사실 상향 전파(동기화 루트 목록을 `WalkConfig`에, 자격 증명 파일·폴더 경계 D12와 2026-11-12 조정, `protect::Protection::lifted`), 읽기 실패 전파(`read_dir` 실패·속성 읽기 실패·깊이 초과 → 그 폴더와 상위 `Contains(Unreadable)`, 2026-11-12), `latest_touch`(생성일, D10), 확장자별 정확한 합. 보안 감사(2026-11-12) 반영: 규칙 매칭에 넘기는 형제 목록은 파일 이름만(감사 2번), 자격 증명 경계는 `Rule::stop()`이 `Stop::Bounded`인 내장 규칙 폴더에서만(감사 2번), 노드마다 `Facts.in_repo`(상위에 `.git`, 규칙 폴더 아래의 `.git`은 제외)를 채움(감사 5번), `ProtectContext::sync_unverified`로 D11 차단. 2차 감사(2026-11-12) 반영: 노드 보호는 `Protections`(사유 집합)로 모으고 부모로는 `Protections::lifted(내장 규칙 폴더 여부)`로 올림(B1), 목록에 `node.exe`가 있으면(`rules::pattern::is_install_root`) 그 아래로는 규칙 매칭을 하지 않음(B3), 노드 경로는 일반 경로에 `entry.file_name()`을 이어 붙임(D1·A1)
+- [ ] **T4 (P1, human: ~1.5일 / CC: ~40분)** — 순회(`walk.rs`): 목록 전체를 읽은 뒤 규칙 매칭(D3), 등급 기준 멈춤(D9), 규칙 노드와 조상 남김, 보호 사실 상향 전파(동기화 루트 목록을 `WalkConfig`에, 자격 증명 파일·폴더 경계 D12와 2026-11-12 조정, `protect::Protection::lifted`), 읽기 실패 전파(`read_dir` 실패·속성 읽기 실패·깊이 초과 → 그 폴더와 상위 `Contains(Unreadable)`, 2026-11-12), `latest_touch`(생성일, D10), 확장자별 정확한 합. 보안 감사(2026-11-12) 반영: 규칙 매칭에 넘기는 형제 목록은 파일 이름만(감사 2번), 자격 증명 경계는 `Rule::stop()`이 `Stop::Bounded`인 내장 규칙 폴더에서만(감사 2번), 노드마다 `Facts.in_repo`(상위에 `.git`, 규칙 폴더 아래의 `.git`은 제외)를 채움(감사 5번), `ProtectContext::sync_unverified`로 D11 차단. 2차 감사(2026-11-12) 반영: 노드 보호는 `Protections`(사유 집합)로 모으고 부모로는 `Protections::lifted(내장 규칙 폴더 여부)`로 올림(B1), 목록에 `node.exe`가 있으면(`rules::pattern::is_install_root`) 그 아래로는 규칙 매칭을 하지 않음(B3). **필수(집중 검토, 사용자 2026-11-13)**: 지금 `RuleMatcher::best()`는 바로 옆 파일 목록만 보므로 `node.exe` 표지가 그 아래 깊은 곳에는 닿지 않는다. 순회는 설치 루트 아래에서 `best()`를 부르지 않거나 "설치 루트 아래" 여부를 넘겨, `check_subtree`와 같은 결과를 내야 한다. T4 테스트로 `C:\nodejs\node_modules\npm\node_modules` 모양 픽스처(`nodejs\node.exe` + `nodejs\node_modules\npm\package.json` + `npm\node_modules`)에서 그 `node_modules`가 규칙 노드·묶음 구성원이 아니고 "모름"인지 확인한다, 노드 경로는 일반 경로에 `entry.file_name()`을 이어 붙임(D1·A1)
   - Files: `src-tauri/src/core/scan/{walk,policy,mod}.rs`
   - Verify: `cargo test scan` (D9 Downloads, 사용자 규칙 멈춤 기준)
 - [ ] **T5 (P1, human: ~2일 / CC: ~45분)** — 정리 단계 `scan/tree.rs`(D3): 묶음, `in_tree`, 묶음 전용 조상 제거와 `parent_id` 재연결, 모음 행(`kind: rest`, "자식" 정의는 Outside Voice 1번), Temp 가상 행 표시(구성원 판정 D10·D23), `tree_bytes`(D6), `category`(D15), 칸별 `blocked_bytes`(D24), M2 회귀 테스트 `m2_regression_rule_free_tree_unchanged`(D17)

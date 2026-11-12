@@ -100,10 +100,58 @@ pub fn windows_dir() -> Option<PathBuf> {
     win::windows_dir()
 }
 
-/// Where an existing path really is once links (junctions, symlinks) are followed
-/// (`GetFinalPathNameByHandleW`), in plain form. `None` if it does not exist or cannot be opened.
-pub fn final_path(path: &Path) -> Option<PathBuf> {
+/// Where a path really is once links (junctions, symlinks) are followed
+/// (`GetFinalPathNameByHandleW`), in plain form. `Ok(None)` when nothing exists there;
+/// `Err` when it exists but cannot be opened or named (the caller fails closed).
+pub fn final_path(path: &Path) -> Result<Option<PathBuf>, String> {
     win::final_path(path)
+}
+
+/// Profile and program folders read from the shell (`SHGetKnownFolderPath`), never from the
+/// environment, which a process can inherit stale or wrong (focused review 5). Keyed by the
+/// variable names rule patterns use, so `%LOCALAPPDATA%\npm-cache` keeps working.
+pub const SHELL_FOLDERS: &[(&str, KnownFolder)] = &[
+    ("LOCALAPPDATA", KnownFolder::LocalAppData),
+    ("APPDATA", KnownFolder::RoamingAppData),
+    ("USERPROFILE", KnownFolder::Profile),
+    ("ProgramFiles", KnownFolder::ProgramFiles),
+    ("ProgramFiles(x86)", KnownFolder::ProgramFilesX86),
+];
+
+/// Resolves a variable for the app: the shell folders above from the shell, `SystemRoot` from
+/// `GetSystemWindowsDirectoryW`, with no fallback to the environment for either. Any other name
+/// (tool locations such as `NVM_HOME`, `OneDrive`) comes from the environment.
+pub fn lookup(name: &str) -> Option<PathBuf> {
+    if name.eq_ignore_ascii_case("SystemRoot") || name.eq_ignore_ascii_case("windir") {
+        return windows_dir();
+    }
+    match SHELL_FOLDERS
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+    {
+        Some((_, folder)) => known_folder(*folder),
+        None => env_path(name),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KnownFolder {
+    Documents,
+    Desktop,
+    Pictures,
+    Videos,
+    Music,
+    LocalAppData,
+    RoamingAppData,
+    Profile,
+    ProgramFiles,
+    ProgramFilesX86,
+}
+
+/// `SHGetKnownFolderPath`: where the shell keeps a known folder now (redirected or moved
+/// included).
+pub fn known_folder(folder: KnownFolder) -> Option<PathBuf> {
+    win::known_folder(folder)
 }
 
 /// The path Windows would use for `path`: `.` and `..` collapsed (`GetFullPathNameW`), and a
@@ -209,18 +257,28 @@ mod win {
         Some(String::from_utf16_lossy(&buf[..end]))
     }
 
-    /// Where an existing file or folder really is, links resolved (`\\?\` stripped).
-    pub fn final_path(path: &Path) -> Option<PathBuf> {
+    /// See `super::final_path`.
+    pub fn final_path(path: &Path) -> Result<Option<PathBuf>, String> {
         use windows::core::HSTRING;
-        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::Foundation::{
+            CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE,
+        };
         use windows::Win32::Storage::FileSystem::{
             CreateFileW, GetFinalPathNameByHandleW, FILE_FLAG_BACKUP_SEMANTICS,
             FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
             OPEN_EXISTING, VOLUME_NAME_DOS,
         };
+        struct Handle(HANDLE);
+        impl Drop for Handle {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = CloseHandle(self.0);
+                }
+            }
+        }
         let wide = HSTRING::from(super::verbatim(path).as_os_str());
         // Folders only need BACKUP_SEMANTICS; no data is read, so cloud files are not recalled.
-        let h = unsafe {
+        let opened = unsafe {
             CreateFileW(
                 &wide,
                 FILE_READ_ATTRIBUTES.0,
@@ -230,22 +288,63 @@ mod win {
                 FILE_FLAG_BACKUP_SEMANTICS,
                 None,
             )
-        }
-        .ok()?;
-        let mut buf = vec![0u16; 1024];
-        let n = unsafe { GetFinalPathNameByHandleW(h, &mut buf, VOLUME_NAME_DOS) } as usize;
-        unsafe {
-            let _ = CloseHandle(h);
-        }
-        if n == 0 || n >= buf.len() {
-            return None;
-        }
+        };
+        let h = match opened {
+            Ok(h) => Handle(h),
+            Err(e)
+                if e.code() == ERROR_FILE_NOT_FOUND.to_hresult()
+                    || e.code() == ERROR_PATH_NOT_FOUND.to_hresult() =>
+            {
+                return Ok(None)
+            }
+            Err(e) => return Err(e.message()),
+        };
+        // Sized by what the call asks for, not a fixed buffer (focused review 3).
+        let mut buf = vec![0u16; 512];
+        let n = loop {
+            let n = unsafe { GetFinalPathNameByHandleW(h.0, &mut buf, VOLUME_NAME_DOS) } as usize;
+            if n == 0 {
+                return Err(windows::core::Error::from_thread().message());
+            }
+            if n < buf.len() {
+                break n;
+            }
+            buf.resize(n + 1, 0);
+        };
         let s = String::from_utf16_lossy(&buf[..n]);
         let s = match s.strip_prefix(r"\\?\UNC\") {
             Some(rest) => format!(r"\\{rest}"),
             None => s.strip_prefix(r"\\?\").unwrap_or(&s).to_string(),
         };
-        Some(PathBuf::from(s))
+        Ok(Some(PathBuf::from(s)))
+    }
+
+    pub fn known_folder(folder: super::KnownFolder) -> Option<PathBuf> {
+        use super::KnownFolder as K;
+        use windows::Win32::System::Com::CoTaskMemFree;
+        use windows::Win32::UI::Shell::{
+            FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_LocalAppData, FOLDERID_Music,
+            FOLDERID_Pictures, FOLDERID_Profile, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86,
+            FOLDERID_RoamingAppData, FOLDERID_Videos, SHGetKnownFolderPath, KF_FLAG_DONT_VERIFY,
+        };
+        let id = match folder {
+            K::Documents => FOLDERID_Documents,
+            K::Desktop => FOLDERID_Desktop,
+            K::Pictures => FOLDERID_Pictures,
+            K::Videos => FOLDERID_Videos,
+            K::Music => FOLDERID_Music,
+            K::LocalAppData => FOLDERID_LocalAppData,
+            K::RoamingAppData => FOLDERID_RoamingAppData,
+            K::Profile => FOLDERID_Profile,
+            K::ProgramFiles => FOLDERID_ProgramFiles,
+            K::ProgramFilesX86 => FOLDERID_ProgramFilesX86,
+        };
+        unsafe {
+            let p = SHGetKnownFolderPath(&id, KF_FLAG_DONT_VERIFY, None).ok()?;
+            let path = p.to_string().ok().filter(|s| !s.is_empty());
+            CoTaskMemFree(Some(p.0 as *const _));
+            path.map(PathBuf::from)
+        }
     }
 
     /// `GetSystemWindowsDirectoryW`: the shared Windows folder even under Terminal Services,
@@ -343,6 +442,20 @@ mod tests {
         for p in [r"\\?\C:\x", r"\\.\C:", r"rel\x", r"C:\a\..\b", r"C:rel"] {
             assert_eq!(verbatim(Path::new(p)), PathBuf::from(p), "{p}");
         }
+    }
+
+    /// Focused review 5: shell folders come from the shell, tool variables from the environment.
+    #[test]
+    fn review_5_lookup_reads_shell_folders_from_the_shell() {
+        for (name, folder) in SHELL_FOLDERS {
+            let got = lookup(name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(Some(got.clone()), known_folder(*folder), "{name}");
+            assert!(got.is_absolute(), "{name}: {got:?}");
+        }
+        assert_eq!(lookup("SystemRoot"), windows_dir());
+        assert_eq!(lookup("windir"), windows_dir());
+        assert_eq!(lookup("NVM_HOME"), env_path("NVM_HOME"));
+        assert_eq!(lookup("ClearCacheNoSuchVar"), None);
     }
 
     /// Audit 13: the Windows folder comes from the OS, not from a variable anyone can set.

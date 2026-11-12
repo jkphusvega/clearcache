@@ -42,8 +42,13 @@ pub fn write_verbatim(path: &Path, bytes: usize) {
 pub struct DenyList(PathBuf);
 
 pub fn deny_list(dir: &Path) -> DenyList {
-    icacls(dir, &["/deny", "*S-1-1-0:(RD)"]);
-    DenyList(dir.to_path_buf())
+    deny(dir, "(RD)")
+}
+
+/// Denies `rights` (icacls syntax, e.g. `(RA)`) to Everyone until the guard drops.
+pub fn deny(path: &Path, rights: &str) -> DenyList {
+    icacls(path, &["/deny", &format!("*S-1-1-0:{rights}")]);
+    DenyList(path.to_path_buf())
 }
 
 impl Drop for DenyList {

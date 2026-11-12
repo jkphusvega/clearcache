@@ -1050,3 +1050,177 @@ fn audit2_c1_short_name_root_is_stored_expanded() {
     assert!(det.contains(&long.join("inner")), "{:?}", det.roots);
     assert!(!det.roots[0].contains('~'), "{:?}", det.roots);
 }
+
+// ===== Focused review of 2f7f2b1 (2026-11-13): `review_<finding>_…` =====
+
+/// 1: an optional tool variable that is set but cannot be resolved turns the `**\` rules off,
+/// like a missing required one.
+#[test]
+fn review_1_unresolvable_tool_variable_turns_named_rules_off() {
+    let rules = BuiltinRules::embedded().rules().unwrap().rules;
+    for bad in [r#""D:\tools\nvm""#, r"D:\tools\nvm\.", r"%USERPROFILE%\nvm"] {
+        let m = RuleMatcher::new(&rules, &|k| match k {
+            "NVM_HOME" => Some(PathBuf::from(bad)),
+            _ => env(k),
+        });
+        for path in [
+            r"D:\tools\nvm\v18\node_modules\npm\node_modules",
+            r"C:\work\proj\node_modules",
+        ] {
+            assert_eq!(best(&m, path, &["package.json"]), None, "{bad} {path}");
+        }
+        assert_eq!(
+            best(&m, r"C:\Users\me\AppData\Local\npm-cache", &[]),
+            Some("npm-cache"),
+            "{bad}"
+        );
+    }
+}
+
+/// 2: a protected location that cannot be resolved is no longer dropped: paths in the user
+/// folder are refused instead of left open.
+#[test]
+fn review_2_unresolved_protection_refuses_the_user_folder() {
+    let fx = testzone::fixture();
+    let home = fx.path().join("home");
+    let protect_dir = home.join(r"Roaming\Microsoft\Protect");
+    let elsewhere = fx.path().join("work");
+    fs::create_dir_all(&protect_dir).unwrap();
+    fs::create_dir_all(&elsewhere).unwrap();
+    let det = SyncRootDetection::with_roots(Vec::new());
+    let (home_c, roaming) = (home.clone(), home.join(r"Roaming\."));
+    let ctx = ProtectContext::new(
+        move |k| match k {
+            "USERPROFILE" => Some(home_c.clone()),
+            "APPDATA" => Some(roaming.clone()),
+            _ => env(k),
+        },
+        &det,
+    );
+    assert!(ctx.unresolved().iter().any(|u| u.what.contains("APPDATA")));
+    assert!(matches!(
+        check_item(&ctx, &protect_dir, &dir(), &NoStopFolders),
+        Err(Refusal::ProtectionUnresolved { .. })
+    ));
+    assert_eq!(check_item(&ctx, &elsewhere, &dir(), &NoStopFolders), Ok(()));
+
+    // A sync root that cannot be resolved at re-check time (an 8.3-shaped name that no longer
+    // reads), reaching the context directly.
+    let mut det = SyncRootDetection::default();
+    det.roots = vec![home.join("Sync~2").to_string_lossy().into_owned()];
+    let home_c = home.clone();
+    let ctx = ProtectContext::new(
+        move |k| {
+            if k == "USERPROFILE" {
+                Some(home_c.clone())
+            } else {
+                env(k)
+            }
+        },
+        &det,
+    );
+    assert!(matches!(
+        check_item(&ctx, &protect_dir, &dir(), &NoStopFolders),
+        Err(Refusal::ProtectionUnresolved { .. })
+    ));
+    assert_eq!(check_item(&ctx, &elsewhere, &dir(), &NoStopFolders), Ok(()));
+
+    // Without the Windows folder nothing can be cleared, inside or outside the user folder.
+    let det = SyncRootDetection::with_roots(Vec::new());
+    let no_windows = ProtectContext::new(|k| if k == "SystemRoot" { None } else { env(k) }, &det);
+    assert!(matches!(
+        check_item(&no_windows, &elsewhere, &dir(), &NoStopFolders),
+        Err(Refusal::ProtectionUnresolved { .. })
+    ));
+
+    // A personal folder handed in that cannot be resolved.
+    let ctx = ctx_full(&home).with_personal_folders(vec![PathBuf::from(r"C:\NOSUCH~1\Docs")]);
+    assert!(matches!(
+        check_item(&ctx, &protect_dir, &dir(), &NoStopFolders),
+        Err(Refusal::ProtectionUnresolved { .. })
+    ));
+}
+
+fn ctx_full(home: &Path) -> ProtectContext {
+    let home = home.to_path_buf();
+    ProtectContext::new(
+        move |k| {
+            if k == "USERPROFILE" {
+                Some(home.clone())
+            } else {
+                env(k)
+            }
+        },
+        &SyncRootDetection::with_roots(Vec::new()),
+    )
+}
+
+/// 3: a sync root that exists but cannot be followed fails its source; one that does not exist
+/// is fine; a target deeper than the old fixed buffer is still found.
+#[test]
+fn review_3_link_target_failure_fails_the_source() {
+    let fx = testzone::fixture();
+    // Exists, but its attributes cannot be read: neither on the folder nor through its parent.
+    let parent = fx.path().join("p");
+    let locked = parent.join("locked-root");
+    fs::create_dir_all(&locked).unwrap();
+    let _no_attrs = testzone::deny(&locked, "(RA)");
+    let _no_list = testzone::deny_list(&parent);
+    assert!(crate::core::paths::final_path(&locked).is_err());
+    let det = SyncRootDetection::detect(&[src(
+        "sync_root_manager",
+        Ok(vec![locked.to_str().unwrap()]),
+        true,
+    )]);
+    assert!(det.sources[0].error.is_some(), "{:?}", det.sources);
+    assert!(det.all_failed);
+
+    let missing = fx.path().join("gone");
+    let det = SyncRootDetection::detect(&[src(
+        "sync_root_manager",
+        Ok(vec![missing.to_str().unwrap()]),
+        true,
+    )]);
+    assert!(det.sources[0].error.is_none(), "{:?}", det.sources);
+
+    let mut deep = fx.path().join("deep");
+    while deep.to_string_lossy().len() < 1200 {
+        deep = deep.join("a-fairly-long-folder-name");
+    }
+    fs::create_dir_all(crate::core::paths::verbatim(&deep)).unwrap();
+    let found = crate::core::paths::final_path(&deep)
+        .expect("follows")
+        .expect("exists");
+    assert!(crate::core::paths::same_path(&found, &deep), "{found:?}");
+    let det = SyncRootDetection::detect(&[src(
+        "sync_root_manager",
+        Ok(vec![deep.to_str().unwrap()]),
+        true,
+    )]);
+    assert!(det.sources[0].error.is_none(), "{:?}", det.sources);
+    assert!(det.contains(&deep.join("x")));
+}
+
+/// 4: a sync root whose real name ends in a dot matches its contents the way the protection
+/// check does (the scan-side regression is in `scan::tests`).
+#[test]
+fn review_4_contains_matches_like_the_protection_check() {
+    let fx = testzone::fixture();
+    let root = fx.path().join(r"od\root.");
+    odd_dir(&root);
+    let det = SyncRootDetection::with_roots(vec![root.clone()]);
+    let ctx = ProtectContext::new(env, &det);
+    for p in [
+        root.join("x"),
+        fx.path().join(r"od\root\x"),
+        fx.path().join(r"OD\ROOT. \x"),
+    ] {
+        assert!(det.contains(&p), "{p:?}");
+        assert_eq!(
+            ctx.path_protection(&p),
+            Some(Self_(Reason::SyncRoot)),
+            "{p:?}"
+        );
+    }
+    assert!(!det.contains(&fx.path().join(r"od\rooty\x")));
+}

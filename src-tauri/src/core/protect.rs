@@ -143,14 +143,7 @@ pub const PERSONAL_FOLDERS: &[(KnownFolder, &str)] = &[
     (KnownFolder::Music, "Music"),
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KnownFolder {
-    Documents,
-    Desktop,
-    Pictures,
-    Videos,
-    Music,
-}
+pub use crate::core::paths::KnownFolder;
 
 /// WSL·Docker·Hyper-V·VirtualBox·QEMU disks (S11), protected regardless of size.
 pub const VIRTUAL_DISK_EXTS: &[&str] = &[
@@ -538,6 +531,16 @@ fn credential_dir(comp: &str) -> Option<&'static str> {
     })
 }
 
+/// A protected location the context could not resolve, and how far the gap reaches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Unresolved {
+    /// What was looked up (`%APPDATA%\Microsoft\Protect`, a sync root, `Documents`, …).
+    pub what: String,
+    /// The Windows folder: no path can be cleared. Anything else lives in the user folder, so
+    /// only paths there are refused.
+    pub everywhere: bool,
+}
+
 /// Environment and sync roots a verdict depends on. Build a fresh one for each re-check.
 #[derive(Debug, Clone, Default)]
 pub struct ProtectContext {
@@ -547,57 +550,117 @@ pub struct ProtectContext {
     credential_dirs: Vec<CanonPath>,
     sync_roots: Vec<CanonPath>,
     sync_all_failed: bool,
+    /// Locations that could not be resolved. Kept instead of dropped, so the paths they would
+    /// have protected are refused rather than left open (focused review 1·2).
+    unresolved: Vec<Unresolved>,
 }
 
 impl ProtectContext {
-    /// `env` resolves `SystemRoot`, `USERPROFILE`, `LOCALAPPDATA` and `APPDATA`. For tests;
-    /// the app uses `from_system`.
+    /// `env` resolves `SystemRoot`, `USERPROFILE`, `LOCALAPPDATA` and `APPDATA`. Tests pass a
+    /// table; the app uses `from_system`, which reads them from the OS.
     pub fn new(env: impl Fn(&str) -> Option<PathBuf>, sync: &SyncRootDetection) -> Self {
-        let canon = |var: &str, rel: &str| env(var).and_then(|p| CanonPath::new(&p.join(rel)));
-        Self {
-            system_root: canon("SystemRoot", ""),
-            user_home: canon("USERPROFILE", ""),
-            personal_folders: PERSONAL_FOLDERS
-                .iter()
-                .filter_map(|(_, name)| canon("USERPROFILE", name))
-                .collect(),
-            credential_dirs: CREDENTIAL_ENV
-                .iter()
-                .filter_map(|(var, rel)| canon(var, rel))
-                .collect(),
-            sync_roots: sync
-                .roots
-                .iter()
-                .filter_map(|r| CanonPath::new(Path::new(r)))
-                .collect(),
+        let mut ctx = Self {
             sync_all_failed: sync.all_failed,
+            ..Self::default()
+        };
+        let mut resolve = |var: &str, rel: &str, everywhere: bool| {
+            let found = env(var).and_then(|p| CanonPath::new(&p.join(rel)));
+            if found.is_none() {
+                ctx.unresolved.push(Unresolved {
+                    what: if rel.is_empty() {
+                        format!("%{var}%")
+                    } else {
+                        format!(r"%{var}%\{rel}")
+                    },
+                    everywhere,
+                });
+            }
+            found
+        };
+        // A missing profile already blocks everything (`sync_unverified`).
+        let system_root = resolve("SystemRoot", "", true);
+        let user_home = env("USERPROFILE").and_then(|p| CanonPath::new(&p));
+        let personal: Vec<_> = PERSONAL_FOLDERS
+            .iter()
+            .filter_map(|(_, name)| resolve("USERPROFILE", name, false))
+            .collect();
+        let credential: Vec<_> = CREDENTIAL_ENV
+            .iter()
+            .filter_map(|(var, rel)| resolve(var, rel, false))
+            .collect();
+        ctx.system_root = system_root;
+        ctx.user_home = user_home;
+        ctx.personal_folders = personal;
+        ctx.credential_dirs = credential;
+        for r in &sync.roots {
+            match CanonPath::new(Path::new(r)) {
+                Some(c) => ctx.sync_roots.push(c),
+                None => ctx.unresolved.push(Unresolved {
+                    what: r.clone(),
+                    everywhere: false,
+                }),
+            }
         }
+        ctx
     }
 
+    /// The app's context: profile and program folders from the shell and the Windows folder
+    /// from `GetSystemWindowsDirectoryW` (`paths::lookup`), never from environment variables.
     pub fn from_system(sync: &SyncRootDetection) -> Self {
-        Self::from_shell(paths::env_path, sync)
+        Self::from_shell(paths::lookup, sync)
     }
 
-    /// The Windows folder comes from `GetWindowsDirectoryW`, never `%SystemRoot%`, and personal
-    /// folders from `SHGetKnownFolderPath`, so moved ones are found too; a folder the shell
-    /// cannot resolve falls back to its name under the profile.
+    /// Personal folders from `SHGetKnownFolderPath`, so moved ones are found too; a folder the
+    /// shell cannot resolve falls back to its name under the profile, and one that cannot be
+    /// found either way is recorded as unresolved.
     fn from_shell(env: impl Fn(&str) -> Option<PathBuf>, sync: &SyncRootDetection) -> Self {
         let home = env("USERPROFILE");
         let mut ctx = Self::new(env, sync);
+        ctx.unresolved.retain(|u| !u.everywhere);
         ctx.system_root = paths::windows_dir().and_then(|w| CanonPath::new(&w));
+        if ctx.system_root.is_none() {
+            ctx.unresolved.push(Unresolved {
+                what: "GetSystemWindowsDirectoryW".into(),
+                everywhere: true,
+            });
+        }
         let folders = PERSONAL_FOLDERS
             .iter()
-            .filter_map(|(id, name)| {
-                win::known_folder(id).or_else(|| Some(home.as_ref()?.join(name)))
+            .map(|(id, name)| {
+                let found = paths::known_folder(*id).or_else(|| Some(home.as_ref()?.join(name)));
+                (*name, found)
             })
             .collect();
-        ctx.with_personal_folders(folders)
+        ctx.set_personal_folders(folders);
+        ctx
     }
 
     /// Replaces the personal folders (Documents, Desktop, …) the safety rules pin.
     pub fn with_personal_folders(mut self, folders: Vec<PathBuf>) -> Self {
-        self.personal_folders = folders.iter().filter_map(|p| CanonPath::new(p)).collect();
+        let named = folders
+            .into_iter()
+            .map(|p| ("personal folder", Some(p)))
+            .collect();
+        self.set_personal_folders(named);
         self
+    }
+
+    fn set_personal_folders(&mut self, folders: Vec<(&str, Option<PathBuf>)>) {
+        let names: Vec<String> = PERSONAL_FOLDERS
+            .iter()
+            .map(|(_, n)| format!(r"%USERPROFILE%\{n}"))
+            .collect();
+        self.unresolved.retain(|u| !names.contains(&u.what));
+        self.personal_folders.clear();
+        for (name, path) in folders {
+            match path.as_deref().and_then(CanonPath::new) {
+                Some(c) => self.personal_folders.push(c),
+                None => self.unresolved.push(Unresolved {
+                    what: path.map_or_else(|| name.to_string(), |p| p.display().to_string()),
+                    everywhere: false,
+                }),
+            }
+        }
     }
 
     pub fn personal_folders(&self) -> &[CanonPath] {
@@ -612,6 +675,11 @@ impl ProtectContext {
         self.user_home.as_ref()
     }
 
+    /// What could not be resolved, for the warning line and the scan log.
+    pub fn unresolved(&self) -> &[Unresolved] {
+        &self.unresolved
+    }
+
     /// Sync detection cannot clear `path` (S7, D11): no source succeeded and the path is in the
     /// user folder, or there is no user folder to tell inside from outside. Fails closed.
     pub fn sync_unverified(&self, path: &CanonPath) -> bool {
@@ -619,6 +687,13 @@ impl ProtectContext {
             None => true,
             Some(home) => self.sync_all_failed && path.starts_with(home),
         }
+    }
+
+    /// The first unresolved location whose gap covers `path`: anything for the Windows folder,
+    /// paths in the user folder for the rest. Selection and `check_item` refuse such paths.
+    pub fn unresolved_for(&self, path: &CanonPath) -> Option<&Unresolved> {
+        let in_home = self.user_home.as_ref().is_none_or(|h| path.starts_with(h));
+        self.unresolved.iter().find(|u| u.everywhere || in_home)
     }
 
     /// The strongest protection that follows from the path alone (what is shown). Contents
@@ -742,6 +817,8 @@ pub enum Refusal {
     Protected { protection: Protection },
     /// Every sync-root source failed and the item is inside the user folder (S7, D11).
     SyncDetectionFailed,
+    /// A protected location could not be resolved, and its gap covers the item.
+    ProtectionUnresolved { what: String },
     /// Gone, or the item itself cannot be read.
     Missing,
     /// A file became a folder, or the other way round, since the scan.
@@ -769,6 +846,11 @@ pub fn check_item(
     }
     if ctx.sync_unverified(&c) {
         return Err(Refusal::SyncDetectionFailed);
+    }
+    if let Some(u) = ctx.unresolved_for(&c) {
+        return Err(Refusal::ProtectionUnresolved {
+            what: u.what.clone(),
+        });
     }
     // A link above the item would make a rename act on wherever it points.
     for anc in path.ancestors().skip(1).filter(|a| a.parent().is_some()) {
@@ -891,7 +973,7 @@ fn check_subtree(
 
 #[cfg(test)]
 pub(crate) fn known_folder_for_test(folder: KnownFolder) -> Option<PathBuf> {
-    win::known_folder(&folder)
+    paths::known_folder(folder)
 }
 
 #[cfg(test)]
@@ -910,29 +992,6 @@ mod win {
     use std::path::{Path, PathBuf};
     use windows::core::HSTRING;
     use windows::Win32::Storage::FileSystem::GetLongPathNameW;
-
-    /// Where the shell keeps a known folder now (redirected or moved included).
-    pub fn known_folder(folder: &super::KnownFolder) -> Option<PathBuf> {
-        use super::KnownFolder as K;
-        use windows::Win32::System::Com::CoTaskMemFree;
-        use windows::Win32::UI::Shell::{
-            FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Music, FOLDERID_Pictures,
-            FOLDERID_Videos, SHGetKnownFolderPath, KF_FLAG_DONT_VERIFY,
-        };
-        let id = match folder {
-            K::Documents => FOLDERID_Documents,
-            K::Desktop => FOLDERID_Desktop,
-            K::Pictures => FOLDERID_Pictures,
-            K::Videos => FOLDERID_Videos,
-            K::Music => FOLDERID_Music,
-        };
-        unsafe {
-            let p = SHGetKnownFolderPath(&id, KF_FLAG_DONT_VERIFY, None).ok()?;
-            let path = p.to_string().ok().filter(|s| !s.is_empty());
-            CoTaskMemFree(Some(p.0 as *const _));
-            path.map(PathBuf::from)
-        }
-    }
 
     /// `None` when the path does not exist or cannot be read.
     pub fn long_name(path: &Path) -> Option<PathBuf> {
@@ -987,8 +1046,11 @@ mod tests {
         )
     }
 
+    /// The full test environment (every protected location resolves).
     fn home_env(k: &str) -> Option<PathBuf> {
-        (k == "USERPROFILE").then(|| PathBuf::from(HOME))
+        ENV.iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(k))
+            .map(|(_, v)| PathBuf::from(v))
     }
 
     fn ctx() -> ProtectContext {
@@ -1626,7 +1688,16 @@ mod tests {
         fs::create_dir_all(&inside).unwrap();
         fs::create_dir_all(&outside).unwrap();
         let home_s = home.clone();
-        let ctx = ProtectContext::new(move |k| (k == "USERPROFILE").then(|| home_s.clone()), &det);
+        let ctx = ProtectContext::new(
+            move |k| {
+                if k == "USERPROFILE" {
+                    Some(home_s.clone())
+                } else {
+                    home_env(k)
+                }
+            },
+            &det,
+        );
         assert_eq!(
             check(&ctx, &inside, &dir_snap()),
             Err(Refusal::SyncDetectionFailed)

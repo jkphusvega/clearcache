@@ -612,7 +612,7 @@ mod tests {
                 })
             }
         }
-        let root = paths::env_path("SystemRoot").unwrap().join("WinSxS");
+        let root = paths::windows_dir().unwrap().join("WinSxS");
         let s = scope(&root, &[(1, &root)]);
         let gb = |b: u64| b as f64 / 1e9; // DISM's GB
         for (name, opener) in [("disk", &Win32Opener as &dyn FileOpener), ("eof", &EofOnly)] {
@@ -642,7 +642,7 @@ mod tests {
         use windows::core::HSTRING;
         use windows::Win32::Storage::FileSystem::GetCompressedFileSizeW;
 
-        let root = paths::env_path("SystemRoot").unwrap().join("WinSxS");
+        let root = paths::windows_dir().unwrap().join("WinSxS");
         let mut samples = Vec::new();
         let mut stack = vec![root];
         while let Some(d) = stack.pop() {
