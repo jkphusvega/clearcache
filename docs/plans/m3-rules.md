@@ -239,9 +239,10 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
   - 전파를 멈추는 지점은 규칙에 걸린 폴더다. 그 폴더 아래의 `.git`은 저장소 루트 표시도 하지 않는다(결과 트리에 올리지 않으므로 표시할 노드도 없다).
 - **큰 민감 파일**: `.vhdx`, `.vhd`, `.vmdk`, `.pst`, `.ost` 파일이 합쳐서 1 GB 이상인 폴더는 `user_data`로 고정한다. 크기는 확장자별 정확한 합을 따로 센다. M2의 확장자 맵은 상위 32개만 남기므로 그것으로는 셀 수 없다. (`.vhdx`·`.vhd`·`.vmdk`는 크기와 관계없이 S11·S2로 따로 막힌다.)
 - **자격 증명 파일(U9, eng 리뷰 D12)**: 아래 파일이 **크기와 관계없이 하나라도** 있는 폴더는 자격 증명 보호(선택 불가, `explain_only`)다. 목록은 `protect.rs`의 상수 `CREDENTIAL_FILES` 하나에 두고, M4 격리 직전 검사(S3)도 같은 상수를 쓴다.
-  - 확장자: `.kdbx`(KeePass 2), `.kdb`(KeePass 1), `.psafe3`(Password Safe), `.ppk`(PuTTY 개인 키), `.pfx`·`.p12`(PKCS#12 인증서 + 개인 키)
-  - 파일 이름: `wallet.dat`(Bitcoin Core 지갑)
-  - 폴더 이름: `*.opvault`(1Password 로컬 금고는 폴더 묶음이다. 그 폴더 자체가 자격 증명 보호다)
+  - 확장자: `.kdbx`(KeePass 2), `.kdb`(KeePass 1), `.psafe3`(Password Safe), `.ppk`(PuTTY 개인 키), `.pfx`·`.p12`(PKCS#12 인증서 + 개인 키), `.1pux`(1Password 내보내기), `.agilekeychain`(1Password 옛 금고, 파일로 있어도)
+  - 파일 이름: `wallet.dat`(Bitcoin Core 지갑), `default_wallet`(Electrum 지갑), `.git-credentials`(git 평문 자격 증명), `key4.db`(Firefox·Thunderbird 키 DB, 복사한 프로필 포함). 추가는 사용자 2026-11-12(감사 PoC p4). `logins.json`은 이름이 흔해 넣지 않는다(Firefox 것은 프로필 경로로 이미 보호됨)
+  - 폴더 이름: `*.opvault`, `*.agilekeychain`(1Password 로컬 금고는 폴더 묶음이다. 그 폴더 자체가 자격 증명 보호다)
+  - 이름 변형(감사 9번): 끝의 점·공백을 떼고, 백업 접미사(`.bak`·`.old`·`.orig`·`.backup`·`.tmp`·끝의 `~`) 하나를 벗긴 이름도 맞춘다
   - 넣지 않은 것: `.pem`·`.key`·`.crt`·`.cer`(공개 인증서·테스트 키가 개발 프로젝트에 흔해 오탐이 많음), `.gpg`·`.asc`(공개 키·서명이 흔함, 개인 키링은 `.gnupg` 경로 규칙이 막음), `.jks`·`.keystore`(Android 프로젝트와 `~\.android\debug.keystore`에 늘 있음), 확장자 없는 `id_rsa` 등(`.ssh` 경로 규칙이 막음).
   - 전파: S2처럼 상위로 올린다. 단 "안전"·"아마 안전" 규칙 폴더 안에서 나오면 그 규칙 폴더까지만 선택 불가로 만들고 그 위로는 올리지 않는다(`.git`과 같은 경계, D9). 예: `node_modules\kdbxweb\test\a.kdbx`는 그 `node_modules`만 막고 프로젝트 폴더는 막지 않는다. 선택 불가 이유: "자격 증명 파일 포함(.kdbx)". 이름으로 찾은 자격 증명 폴더(`.ssh` 등)도 같은 경계를 쓴다(위 "자격 증명 보호 경로", 이유 "자격 증명 폴더 포함(.ssh)").
 
@@ -570,7 +571,7 @@ DESIGN.md                    화면 규칙 (디자인 리뷰 5A, T6에서 작성
 | 13(낮음) | `SystemRoot`가 없으면 `D:\WINNT` 같은 설치 위치가 보호되지 않음. 다른 관리자로 승격 실행하면 개인 폴더·OneDrive가 그 관리자 것으로 잡힘 | Windows 폴더를 `GetWindowsDirectoryW`로(`ProtectContext::from_system`, `ScanConfig::for_target`). 승격 실행은 M4 요구사항(관리자 권한으로 실행하지 않음) | `paths::tests::audit_13_windows_dir_comes_from_the_os`, `protect::tests::audit_13_system_root_ignores_the_environment`, `scan::tests::audit_13_scan_config_system_root_from_the_os` |
 
 - 보고서의 "막혀 있음을 확인한 것"도 회귀 테스트로 옮겼다. ſ·ı·켈빈 이름은 `audit_10_lookalike_names_stay_distinct`, 없는 경로의 `~`(S12 복원에서 `~cache` 같은 이름이 늘 거부되던 것)는 `audit_tilde_in_missing_path_is_compared_as_written`이다. 쌍둥이 없는 `evil.`, 끝 공백 폴더, `..`, 스트림 문법, 장치 경로, 없는 8.3 이름은 기존 `protect` 테스트와 `audit_01_lone_odd_folder_is_read`가 지킨다.
-- PoC p4가 출력만 하고 보고서가 판정하지 않은 파일 이름(`default_wallet`, `key4.db`, `logins.json`, `.git-credentials`, `vault.1pux`, `export.agilekeychain`)은 자격 증명 파일 목록(D12)에 넣지 않았다. 넣을지는 사용자가 정한다.
+- PoC p4가 출력만 하고 보고서가 판정하지 않은 파일 이름 중 `.git-credentials`, `vault.1pux`(`.1pux`), `export.agilekeychain`(`.agilekeychain`, 폴더로도), `default_wallet`, `key4.db`는 사용자 결정(2026-11-12)으로 D12 목록에 넣었다. `logins.json`은 이름이 흔해 뺐다(Firefox 프로필 경로로 이미 보호됨). 백업 접미사에 끝의 `~`도 더했다. 테스트 `audit_p4_credential_names_added_to_d12`.
 - 같이 고친 것: 8.3 긴 이름 조회는 8.3 모양 구성요소(`이름~숫자`, 8.3 길이)에만 한다(`looks_short`). 전에는 `~`가 든 이름이면 다 조회해서, 없는 `$WINDOWS.~BT` 같은 경로가 "시스템"이 아니라 "확인 불가"로 판정됐다.
 - 규칙 파일 버전을 2로 올렸다(`outside_repo_grade`, Hugging Face 패턴). `outside_repo_grade`는 원래 등급보다 조심스럽고 멈춤 여부가 같아야 한다(스키마 검사).
 

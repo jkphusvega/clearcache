@@ -554,6 +554,58 @@ fn audit_09_file_name_variants() {
     }
 }
 
+/// PoC p4 names the report left open, added to D12 by the user (2026-11-12). `logins.json`
+/// stays out: the name is common, and Firefox's copy is inside a protected profile.
+#[test]
+fn audit_p4_credential_names_added_to_d12() {
+    for (name, want) in [
+        (".git-credentials", ".git-credentials"),
+        (".GIT-CREDENTIALS", ".git-credentials"),
+        ("vault.1pux", ".1pux"),
+        ("export.agilekeychain", ".agilekeychain"),
+        ("default_wallet", "default_wallet"),
+        ("key4.db", "key4.db"),
+        ("key4.db~", "key4.db"),
+        ("db.kdbx~", ".kdbx"),
+        ("default_wallet.bak", "default_wallet"),
+    ] {
+        assert_eq!(
+            file_protection(name),
+            Some(Reason::CredentialFile { name: want }),
+            "{name:?}"
+        );
+    }
+    for name in [
+        "logins.json",
+        "my.git-credentials.txt",
+        "key4.dbx",
+        "default_wallet.json",
+        "~",
+        "notes~",
+    ] {
+        assert_eq!(file_protection(name), None, "{name:?}");
+    }
+    // The Agile Keychain is a folder bundle, like `.opvault`.
+    assert_eq!(
+        ctx().path_protection(Path::new(
+            r"C:\Users\me\Dropbox\1Password.agilekeychain\data"
+        )),
+        Some(Self_(Reason::CredentialFile {
+            name: ".agilekeychain"
+        }))
+    );
+    // A real fixture: `.git-credentials` in a project makes it a credential holder.
+    let fx = testzone::fixture();
+    let proj = fx.path().join("proj");
+    write_file(&proj.join(".git-credentials"), 40);
+    assert_eq!(
+        refusal(check_item(&ctx(), &proj, &dir(), &NoStopFolders)),
+        Contains(Reason::CredentialFile {
+            name: ".git-credentials"
+        })
+    );
+}
+
 /// p1e: a folder holding only such names is refused by `check_item`.
 #[test]
 fn audit_09_check_item_finds_odd_file_names() {

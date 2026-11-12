@@ -106,7 +106,8 @@ pub enum CredentialMatch {
 /// Any one of these makes its folder a credential store regardless of size (D12). The M4
 /// re-check uses the same table. Left out for false positives: `.pem` `.key` `.crt` `.cer`
 /// (dev projects), `.gpg` `.asc` (public keys; `.gnupg` is a credential path), `.jks`
-/// `.keystore` (Android), bare `id_rsa` (`.ssh` is a credential path).
+/// `.keystore` (Android), bare `id_rsa` (`.ssh` is a credential path), `logins.json` (a common
+/// name; Firefox's copy sits in a profile, which is a credential path).
 pub const CREDENTIAL_FILES: &[CredentialMatch] = &[
     CredentialMatch::Ext(".kdbx"),
     CredentialMatch::Ext(".kdb"),
@@ -114,8 +115,18 @@ pub const CREDENTIAL_FILES: &[CredentialMatch] = &[
     CredentialMatch::Ext(".ppk"),
     CredentialMatch::Ext(".pfx"),
     CredentialMatch::Ext(".p12"),
+    // 1Password export, and the legacy Agile Keychain (a folder bundle, matched either way).
+    CredentialMatch::Ext(".1pux"),
+    CredentialMatch::Ext(".agilekeychain"),
     CredentialMatch::FileName("wallet.dat"),
+    // Electrum wallet.
+    CredentialMatch::FileName("default_wallet"),
+    // Plaintext git passwords and tokens (`git credential-store`).
+    CredentialMatch::FileName(".git-credentials"),
+    // Firefox / Thunderbird key database, also found in copied profiles.
+    CredentialMatch::FileName("key4.db"),
     CredentialMatch::DirExt(".opvault"),
+    CredentialMatch::DirExt(".agilekeychain"),
 ];
 
 /// Folders pinned to "사용자 데이터" by the safety rules, with the name used under
@@ -349,7 +360,7 @@ fn split_root(s: &str) -> Option<(String, &str)> {
 }
 
 /// Copies that keep a credential file's contents: `db.kdbx.bak` is still a password database.
-pub const BACKUP_SUFFIXES: &[&str] = &[".bak", ".old", ".orig", ".backup", ".tmp"];
+pub const BACKUP_SUFFIXES: &[&str] = &[".bak", ".old", ".orig", ".backup", ".tmp", "~"];
 
 /// What a file seen in a listing makes of its folder (`Self_`): a credential store (D12) or a
 /// virtual disk holder (S11). Size does not matter for either. The name is matched as Win32
