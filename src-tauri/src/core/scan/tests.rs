@@ -25,6 +25,8 @@ fn cfg(root: &Path) -> ScanConfig {
         user_home: Some(PathBuf::from(r"C:\Users\clearcache-test-nobody")),
         read_only_volume: false,
         drive_used_bytes: None,
+        rules: None,
+        protect: None,
     }
 }
 
@@ -623,4 +625,409 @@ fn review_4_sync_root_named_with_trailing_dot_is_marked() {
         .scopes
         .iter()
         .all(|s| s.nodes.iter().all(|(_, p)| !p.ends_with("root."))));
+}
+
+// ===== M3 T4: rule matching, stops and protection facts in the walk =====
+
+mod t4 {
+    use super::*;
+    use crate::core::protect::{ProtectContext, Protection, Reason, Stop};
+    use crate::core::rules::pattern::RuleMatcher;
+    use crate::core::rules::source::{BuiltinRules, RuleSource};
+    use crate::core::rules::{Grade, Rule, RuleOrigin};
+    use std::sync::Arc;
+    use walk::{walk, TreeNode};
+
+    /// A user folder inside the fixture, and the environment that points at it.
+    fn env_for(home: &Path) -> impl Fn(&str) -> Option<PathBuf> + Clone {
+        let home = home.to_path_buf();
+        move |k: &str| {
+            let v = match k {
+                "USERPROFILE" => home.clone(),
+                "LOCALAPPDATA" => home.join(r"AppData\Local"),
+                "APPDATA" => home.join(r"AppData\Roaming"),
+                "ProgramFiles" => home.parent()?.join("pf"),
+                "ProgramFiles(x86)" => home.parent()?.join("pf86"),
+                "SystemRoot" => crate::core::paths::windows_dir()?,
+                _ => return None,
+            };
+            Some(v)
+        }
+    }
+
+    fn user_rule(id: &str, pattern: &str, grade: Grade) -> Rule {
+        let mut r = crate::core::rules::testenv::rule(id, pattern, grade);
+        r.source = RuleOrigin::User;
+        r
+    }
+
+    struct Scan {
+        root: TreeNode,
+        rules: Arc<RuleMatcher>,
+    }
+
+    impl Scan {
+        fn node(&self, path: &Path) -> &TreeNode {
+            fn find<'a>(n: &'a TreeNode, p: &Path) -> Option<&'a TreeNode> {
+                if crate::core::paths::same_path(&n.path, p) {
+                    return Some(n);
+                }
+                n.children.iter().find_map(|c| find(c, p))
+            }
+            find(&self.root, path).unwrap_or_else(|| panic!("no node {path:?}"))
+        }
+
+        fn has_node(&self, path: &Path) -> bool {
+            fn find(n: &TreeNode, p: &Path) -> bool {
+                crate::core::paths::same_path(&n.path, p) || n.children.iter().any(|c| find(c, p))
+            }
+            find(&self.root, path)
+        }
+
+        fn rule_id(&self, path: &Path) -> Option<&str> {
+            self.node(path).rule.map(|i| self.rules.rule(i).id.as_str())
+        }
+
+        fn has_rule_below(&self, path: &Path) -> bool {
+            fn any(n: &TreeNode) -> bool {
+                n.rule.is_some() || n.children.iter().any(any)
+            }
+            self.node(path).children.iter().any(any)
+        }
+    }
+
+    fn scan(root: &Path, home: &Path, threshold: u64, extra: Vec<Rule>) -> Scan {
+        let env = env_for(home);
+        let mut rules = BuiltinRules::embedded().rules().unwrap().rules;
+        rules.extend(extra);
+        let matcher = Arc::new(RuleMatcher::new(&rules, &env));
+        let ctx = ProtectContext::new(env, &SyncRootDetection::with_roots(Vec::new()));
+        let wcfg = WalkConfig {
+            threshold,
+            max_depth: MAX_DEPTH,
+            policy: PolicyContext {
+                drive_root: None,
+                system_root: None,
+            },
+            rules: Some(matcher.clone()),
+            protect: Some(Arc::new(ctx)),
+        };
+        let out = walk(root, "root", &wcfg, &Progress::default()).expect("not cancelled");
+        Scan {
+            root: out.root,
+            rules: matcher,
+        }
+    }
+
+    fn has(n: &TreeNode, p: Protection) -> bool {
+        n.protections.iter().any(|x| x == p)
+    }
+
+    /// D3: `package.json` sorts after `node_modules`; matching waits for the whole listing.
+    #[test]
+    fn t4_rules_match_after_the_whole_listing() {
+        let fx = fixture();
+        let root = fx.path();
+        let proj = root.join("proj");
+        write_file(&proj.join(r"node_modules\pkg\index.js"), 100);
+        write_file(&proj.join("package.json"), 10);
+        let s = scan(root, &root.join("home"), 0, vec![]);
+        let nm = proj.join("node_modules");
+        assert_eq!(s.rule_id(&nm), Some("node-modules"));
+        assert_eq!(s.node(&nm).stop, Some(Stop::Bounded));
+        assert!(
+            s.node(&nm).children.is_empty(),
+            "nothing below a stopping rule folder"
+        );
+        assert_eq!(s.node(&nm).logical, Some(100), "sizes still measured below");
+        assert!(!s.has_node(&nm.join("pkg")));
+    }
+
+    /// D9: a user-data rule (Downloads) only labels and the walk goes on; a safe rule below it
+    /// stops; nothing below that becomes a node, even a rule-shaped folder.
+    #[test]
+    fn t4_d9_downloads_continues_and_safe_rules_stop() {
+        let fx = fixture();
+        let root = fx.path();
+        let home = root.join("home");
+        let dl = home.join("Downloads");
+        write_file(&dl.join(r"proj\package.json"), 10);
+        write_file(&dl.join(r"proj\node_modules\x\Cargo.toml"), 10);
+        write_file(&dl.join(r"proj\node_modules\x\target\a.bin"), 10);
+        write_file(&dl.join(r"stuff\a.bin"), 10);
+        write_file(&dl.join(r"repo\.git\HEAD"), 10);
+        write_file(&dl.join(r"repo\src\main.rs"), 10);
+        let s = scan(root, &home, 0, vec![]);
+        assert_eq!(s.rule_id(&dl), Some("downloads"));
+        assert_eq!(s.node(&dl).stop, None);
+        assert_eq!(s.rule_id(&dl.join("stuff")), None);
+        let nm = dl.join(r"proj\node_modules");
+        assert_eq!(s.rule_id(&nm), Some("node-modules"));
+        assert!(!s.has_node(&nm.join(r"x\target")));
+        assert!(s.node(&dl.join("repo")).repo_root);
+        assert!(s.node(&dl).contains_repo);
+        assert!(s.node(&dl.join(r"repo\src")).in_repo);
+        assert!(!s.node(&dl.join("stuff")).in_repo);
+    }
+
+    /// D9 for user rules: a user-data rule goes on, a safe one stops (without bounding, D12).
+    #[test]
+    fn t4_user_rules_follow_the_same_stop_rule() {
+        let fx = fixture();
+        let root = fx.path();
+        let home = root.join("home");
+        let projects = home.join("Projects");
+        write_file(&projects.join(r"a\package.json"), 10);
+        write_file(&projects.join(r"a\node_modules\i.js"), 10);
+        write_file(&projects.join(r"b\.cache\deep\c.bin"), 10);
+        let extra = vec![
+            user_rule("p", r"%USERPROFILE%\Projects", Grade::UserData),
+            user_rule("c", r"**\.cache", Grade::Safe),
+        ];
+        let s = scan(root, &home, 0, extra);
+        assert_eq!(s.rule_id(&projects), Some("p"));
+        assert_eq!(s.node(&projects).stop, None);
+        assert_eq!(
+            s.rule_id(&projects.join(r"a\node_modules")),
+            Some("node-modules")
+        );
+        let cache = projects.join(r"b\.cache");
+        assert_eq!(s.rule_id(&cache), Some("c"));
+        assert_eq!(s.node(&cache).stop, Some(Stop::Walk));
+        assert!(!s.has_node(&cache.join("deep")));
+    }
+
+    /// `.git` inside a rule folder is no repository and goes nowhere; the project's own is.
+    #[test]
+    fn t4_git_inside_a_rule_folder_is_not_a_repo() {
+        let fx = fixture();
+        let root = fx.path();
+        let proj = root.join("proj");
+        write_file(&proj.join("package.json"), 10);
+        write_file(&proj.join(r"node_modules\dep\.git\HEAD"), 10);
+        let s = scan(root, &root.join("home"), 0, vec![]);
+        assert!(!s.node(&proj).contains_repo);
+        assert!(!s.node(&proj).repo_root);
+        assert!(!s.node(&proj.join("node_modules")).repo_root);
+
+        write_file(&proj.join(r".git\HEAD"), 10);
+        let s = scan(root, &root.join("home"), 0, vec![]);
+        assert!(s.node(&proj).repo_root);
+        assert!(s.node(&proj.join("node_modules")).in_repo);
+        assert!(s.root.contains_repo);
+    }
+
+    /// S2 with the D12 boundary, as `check_item` draws it: credential findings stop at a
+    /// built-in stopping folder; other reasons and user rule folders do not stop them.
+    #[test]
+    fn t4_protection_lifts_with_the_d12_boundary() {
+        let fx = fixture();
+        let root = fx.path();
+        let kdbx = Reason::CredentialFile { name: ".kdbx" };
+        write_file(&root.join(r"plain\secrets\db.kdbx"), 10);
+        write_file(&root.join(r"js\package.json"), 10);
+        write_file(&root.join(r"js\node_modules\pkg\test\db.kdbx"), 10);
+        write_file(&root.join(r"both\package.json"), 10);
+        write_file(&root.join(r"both\node_modules\db.kdbx"), 10);
+        write_file(&root.join(r"both\node_modules\pkg\disk.vhdx"), 10);
+        write_file(&root.join(r"user\.cache\db.kdbx"), 10);
+        let extra = vec![user_rule("c", r"**\.cache", Grade::Safe)];
+        let s = scan(root, &root.join("home"), 0, extra);
+
+        assert!(has(
+            s.node(&root.join(r"plain\secrets")),
+            Protection::Self_(kdbx.clone())
+        ));
+        assert!(has(
+            s.node(&root.join("plain")),
+            Protection::Contains(kdbx.clone())
+        ));
+        // Bounded by the built-in `node_modules`.
+        assert!(has(
+            s.node(&root.join(r"js\node_modules")),
+            Protection::Contains(kdbx.clone())
+        ));
+        assert!(s.node(&root.join("js")).protections.is_empty());
+        // B1 end to end: the credential stops, the disk goes on.
+        let both = s.node(&root.join("both"));
+        assert!(has(both, Protection::Contains(Reason::VirtualDisk)));
+        assert!(!has(both, Protection::Contains(kdbx.clone())));
+        // A user rule folder draws no boundary.
+        assert!(has(
+            s.node(&root.join("user")),
+            Protection::Contains(kdbx.clone())
+        ));
+        // The scan root holds everything that crossed.
+        assert!(has(&s.root, Protection::Contains(kdbx)));
+    }
+
+    /// Unreadable folders block their whole ancestry, also across a rule folder.
+    #[test]
+    fn t4_unreadable_folders_block_upward() {
+        let fx = fixture();
+        let root = fx.path();
+        write_file(&root.join(r"js\package.json"), 10);
+        write_file(&root.join(r"js\node_modules\pkg\i.js"), 10);
+        write_file(&root.join(r"plain\locked\a.txt"), 10);
+        let _a = crate::core::testzone::deny_list(&root.join(r"js\node_modules\pkg"));
+        let _b = crate::core::testzone::deny_list(&root.join(r"plain\locked"));
+        let s = scan(root, &root.join("home"), 0, vec![]);
+        let unreadable = Protection::Contains(Reason::Unreadable);
+        assert!(has(
+            s.node(&root.join(r"js\node_modules")),
+            unreadable.clone()
+        ));
+        assert!(has(s.node(&root.join("js")), unreadable.clone()));
+        assert!(has(s.node(&root.join(r"plain\locked")), unreadable.clone()));
+        assert!(has(s.node(&root.join("plain")), unreadable.clone()));
+        assert!(has(&s.root, unreadable));
+    }
+
+    /// Focused review (required): below a folder holding `node.exe` no rule matches at any
+    /// depth, so `C:\nodejs\node_modules\npm\node_modules` is no rule node, and findings there
+    /// are not bounded.
+    #[test]
+    fn t4_node_install_root_matches_no_rules() {
+        let fx = fixture();
+        let root = fx.path();
+        let nodejs = root.join(r"tools\nodejs");
+        write_file(&nodejs.join("node.exe"), 10);
+        write_file(&nodejs.join(r"node_modules\npm\package.json"), 10);
+        write_file(&nodejs.join(r"node_modules\npm\node_modules\x\i.js"), 10);
+        write_file(&nodejs.join(r"node_modules\npm\node_modules\y\db.kdbx"), 10);
+        let s = scan(root, &root.join("home"), 0, vec![]);
+        assert_eq!(s.rule_id(&nodejs.join("node_modules")), None);
+        assert_eq!(
+            s.rule_id(&nodejs.join(r"node_modules\npm\node_modules")),
+            None
+        );
+        assert!(!s.has_rule_below(&nodejs));
+        assert!(has(
+            s.node(&nodejs),
+            Protection::Contains(Reason::CredentialFile { name: ".kdbx" })
+        ));
+    }
+
+    fn filetime(t: std::time::SystemTime) -> u64 {
+        let d = t.duration_since(std::time::UNIX_EPOCH).unwrap();
+        (d.as_secs() + 11_644_473_600) * 10_000_000 + u64::from(d.subsec_nanos()) / 100
+    }
+
+    fn set_times(path: &Path, created: std::time::SystemTime, modified: std::time::SystemTime) {
+        use std::os::windows::fs::{FileTimesExt, OpenOptionsExt};
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let f = fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .unwrap();
+        f.set_times(
+            fs::FileTimes::new()
+                .set_created(created)
+                .set_modified(modified),
+        )
+        .unwrap();
+    }
+
+    /// D10: the touch time is the latest creation or write of the folder and everything in it.
+    #[test]
+    fn t4_latest_touch_counts_creation_and_folder_times() {
+        use std::time::{Duration, SystemTime};
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_577_836_800); // 2020-01-01
+        let fx = fixture();
+        let root = fx.path();
+        // Everything old.
+        let a = root.join("old");
+        write_file(&a.join("f.txt"), 10);
+        set_times(&a.join("f.txt"), old, old);
+        set_times(&a, old, old);
+        // Written long ago, but created (copied, extracted) just now.
+        let b = root.join("copied");
+        write_file(&b.join("f.txt"), 10);
+        set_times(&b.join("f.txt"), SystemTime::now(), old);
+        set_times(&b, old, old);
+        // Old files in a folder that was itself just written.
+        let c = root.join("touched");
+        write_file(&c.join("f.txt"), 10);
+        set_times(&c.join("f.txt"), old, old);
+        set_times(&c, old, SystemTime::now());
+        let recent = filetime(SystemTime::now() - Duration::from_secs(3600));
+        let s = scan(root, &root.join("home"), 0, vec![]);
+        assert!(s.node(&a).latest_touch < filetime(old + Duration::from_secs(60)));
+        assert!(s.node(&b).latest_touch > recent);
+        assert!(s.node(&c).latest_touch > recent);
+    }
+
+    #[test]
+    fn t4_mail_bytes_are_exact() {
+        let fx = fixture();
+        let root = fx.path();
+        write_file(&root.join(r"mail\a.pst"), 3000);
+        write_file(&root.join(r"mail\old\b.OST"), 2000);
+        write_file(&root.join(r"mail\c.txt"), 500);
+        let s = scan(root, &root.join("home"), 0, vec![]);
+        assert_eq!(s.node(&root.join("mail")).mail_bytes, 5000);
+        assert_eq!(s.root.mail_bytes, 5000);
+    }
+
+    /// D3: rule nodes and their ancestors stay in the tree under the size threshold; other
+    /// small folders do not.
+    #[test]
+    fn t4_rule_nodes_and_ancestors_stay_under_the_threshold() {
+        let fx = fixture();
+        let root = fx.path();
+        write_file(&root.join(r"work\g\p1\package.json"), 10);
+        write_file(&root.join(r"work\g\p1\node_modules\i.js"), 10);
+        write_file(&root.join(r"work\g\p1\src\main.js"), 10);
+        write_file(&root.join(r"work\other\x.txt"), 10);
+        let s = scan(root, &root.join("home"), 1 << 30, vec![]);
+        for p in [r"work", r"work\g", r"work\g\p1", r"work\g\p1\node_modules"] {
+            assert!(s.has_node(&root.join(p)), "{p}");
+        }
+        assert!(!s.has_node(&root.join(r"work\g\p1\src")));
+        assert!(!s.has_node(&root.join(r"work\other")));
+    }
+
+    /// With rules on but nothing matching, the tree is the M2 tree.
+    #[test]
+    fn t4_rules_that_match_nothing_leave_the_m2_tree() {
+        let fx = fixture();
+        let root = fx.path();
+        write_file(&root.join(r"big\a.bin"), 3000);
+        write_file(&root.join(r"big\sub\b.bin"), 2000);
+        write_file(&root.join(r"small\c.bin"), 10);
+        write_file(&root.join("top.log"), 10);
+        let (m2, _) = walk_only(&cfg(root));
+        let s = scan(root, &root.join("home"), KIB, vec![]);
+        fn flat(n: &TreeNode, out: &mut Vec<(String, Option<u64>, usize)>) {
+            out.push((
+                n.path.to_string_lossy().into_owned(),
+                n.logical,
+                n.children.len(),
+            ));
+            for c in &n.children {
+                flat(c, out);
+            }
+        }
+        let mut got = Vec::new();
+        flat(&s.root, &mut got);
+        let want: Vec<_> = m2
+            .nodes
+            .iter()
+            .map(|n| {
+                let kids = m2
+                    .nodes
+                    .iter()
+                    .filter(|c| c.parent_id == Some(n.id))
+                    .count();
+                (n.path.clone(), n.logical_bytes, kids)
+            })
+            .collect();
+        got.sort();
+        let mut want = want;
+        want.sort();
+        // The M2 flattening names the root by its display string; compare the rest.
+        assert_eq!(got[1..], want[1..]);
+    }
 }

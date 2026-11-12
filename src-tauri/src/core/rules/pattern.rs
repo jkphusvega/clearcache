@@ -269,17 +269,25 @@ impl RuleMatcher {
     /// The most specific rule matching folder `path`; `siblings` are the names of the files
     /// (not folders) listed next to it, for `when.sibling_exists`. Ties keep the earlier rule.
     pub fn best(&self, path: &CanonPath, siblings: &[String]) -> Option<&Rule> {
-        let mut best: Option<&Entry> = None;
-        for e in self
-            .entries
-            .iter()
-            .filter(|e| self.matches(e, path, siblings))
-        {
-            if best.is_none_or(|b| Self::specificity(e) > Self::specificity(b)) {
-                best = Some(e);
+        self.best_index(path, siblings).map(|i| self.rule(i))
+    }
+
+    /// `best` as an index into the rule list, for nodes to keep (see `rule`).
+    pub fn best_index(&self, path: &CanonPath, siblings: &[String]) -> Option<usize> {
+        let mut best: Option<usize> = None;
+        for (i, e) in self.entries.iter().enumerate() {
+            if self.matches(e, path, siblings)
+                && best.is_none_or(|b| Self::specificity(e) > Self::specificity(&self.entries[b]))
+            {
+                best = Some(i);
             }
         }
-        best.map(|e| &e.rule)
+        best
+    }
+
+    /// The rule `best_index` returned.
+    pub fn rule(&self, index: usize) -> &Rule {
+        &self.entries[index].rule
     }
 }
 

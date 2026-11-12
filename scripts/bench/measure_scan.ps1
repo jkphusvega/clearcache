@@ -1,6 +1,6 @@
 # Runs the `scan` example over a fixture and records peak working set, result JSON size and
-# walk time (M3 verification 4-1). The fixture stands in for the user folder: USERPROFILE is
-# pointed at it and the `user_home` target is scanned.
+# walk time (M3 verification 4-1). The fixture stands in for the user folder: it is passed as
+# `--root`, and USERPROFILE is pointed at it too for builds from before `--root` existed.
 #
 #   powershell -File scripts/bench/measure_scan.ps1 -Exe <path to scan.exe> -Fixture <dir> [-Runs 3]
 
@@ -40,7 +40,8 @@ $rows = @()
 for ($i = 0; $i -le $Runs; $i++) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Exe
-    $psi.Arguments = "--target user_home --json"
+    # `--root` for builds after the shell-folder change; older builds ignore it and use USERPROFILE.
+    $psi.Arguments = "--target user_home --root `"$Fixture`" --json"
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true

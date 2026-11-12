@@ -14,10 +14,13 @@ use std::time::Instant;
 
 use crate::core::accounting::{self, AccountingUpdate, FileOpener, Scope};
 use crate::core::paths;
-use crate::core::protect::CanonPath;
+use crate::core::protect::{CanonPath, ProtectContext};
+use crate::core::rules::pattern::RuleMatcher;
+use crate::core::rules::source::{self as rule_source, BuiltinRules};
 use crate::core::targets::{ScanTarget, TargetKind};
 use policy::PolicyContext;
 use progress::{Phase, Progress};
+use std::sync::Arc;
 use syncroots::SyncRootDetection;
 use walk::{Skipped, TreeNode, WalkConfig};
 
@@ -120,6 +123,11 @@ pub struct ScanConfig {
     pub user_home: Option<PathBuf>,
     pub read_only_volume: bool,
     pub drive_used_bytes: Option<u64>,
+    /// Rules matched during the walk (M3). `None` keeps the M2 walk unchanged.
+    pub rules: Option<Arc<RuleMatcher>>,
+    /// Protection context for the walk. `None` with rules on: built from the system and this
+    /// scan's sync detection (`ProtectContext::from_system`).
+    pub protect: Option<Arc<ProtectContext>>,
 }
 
 impl ScanConfig {
@@ -149,8 +157,22 @@ impl ScanConfig {
                 (TargetKind::Drive, Some(total), Some(free)) => Some(total.saturating_sub(free)),
                 _ => None,
             },
+            rules: Some(builtin_rules()),
+            protect: None,
         }
     }
+}
+
+/// The built-in rules, compiled once per process against the OS folders (`paths::lookup`).
+/// A file that fails to load yields no rules; the walk still runs and every folder is "모름".
+pub fn builtin_rules() -> Arc<RuleMatcher> {
+    static RULES: OnceLock<Arc<RuleMatcher>> = OnceLock::new();
+    RULES
+        .get_or_init(|| {
+            let loaded = rule_source::load(&BuiltinRules::embedded());
+            Arc::new(RuleMatcher::new(&loaded.set.rules, &paths::lookup))
+        })
+        .clone()
 }
 
 /// M2 allow list for `exclusive_bytes`: WinSxS, uv cache, pnpm store locations.
@@ -207,10 +229,17 @@ pub fn walk_phase(
 ) -> Option<(ScanResult, AccountingPlan)> {
     progress.begin_phase(Phase::Walk);
     let started = Instant::now();
+    let protect = cfg.rules.as_ref().map(|_| {
+        cfg.protect
+            .clone()
+            .unwrap_or_else(|| Arc::new(ProtectContext::from_system(sync)))
+    });
     let wcfg = WalkConfig {
         threshold: cfg.threshold,
         max_depth: cfg.max_depth,
         policy: cfg.policy.clone(),
+        rules: cfg.rules.clone(),
+        protect,
     };
     let out = pool().install(|| walk::walk(&cfg.root, &cfg.root_display, &wcfg, progress))?;
     let elapsed_ms = started.elapsed().as_millis() as u64;

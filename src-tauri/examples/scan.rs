@@ -42,15 +42,23 @@ fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
-    let Some(id) = value("--target") else {
-        eprintln!("usage: scan --list | --target <id> [--json] [--threshold-mib N]");
-        return ExitCode::from(2);
-    };
-    let target = match targets::resolve_current(&id) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("{e}");
+    // `--root <dir>` scans a folder as if it were the user folder (benchmarks, T3/T8). The
+    // profile now comes from the shell, so pointing `USERPROFILE` elsewhere no longer works.
+    let target = if let Some(root) = value("--root") {
+        targets::user_home_target(std::path::PathBuf::from(root))
+    } else {
+        let Some(id) = value("--target") else {
+            eprintln!(
+                "usage: scan --list | --target <id> | --root <dir> [--json] [--threshold-mib N]"
+            );
             return ExitCode::from(2);
+        };
+        match targets::resolve_current(&id) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::from(2);
+            }
         }
     };
     let threshold = value("--threshold-mib")
